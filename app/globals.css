@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --royal-plum: #8C345C;
+  --forest-green: #1E544A;
+  --dusty-pink: #CE9FA6;
+  --soft-gold: #CD9556;
+  --deep-ochre: #C77F2A;
+  --cream: #FAF7F2;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+body {
+  background-color: var(--cream);
+  color: var(--royal-plum);
+}
+
+/* Luxury scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FAF7F2;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CE9FA6;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8C345C;
+}
+
+/* Selection */
+::selection {
+  background-color: rgba(140, 52, 92, 0.2);
+  color: #8C345C;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
