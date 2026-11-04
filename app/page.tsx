@@ -37,6 +37,10 @@ export default async function DashboardPage() {
 
   const categoryNames = categories ? categories.map((c) => c.name) : [];
   const userRole = (profile as any)?.role ?? "user";
+  const publicThemes = (themes ?? []).map((theme) => ({
+    ...theme,
+    additional_notes: null,
+  }));
 
   return (
     <div className="min-h-screen bg-cream">
@@ -45,7 +49,7 @@ export default async function DashboardPage() {
         role={userRole}
       />
       <DashboardClient
-        themes={themes ?? []}
+        themes={publicThemes}
         userEmail={user.email ?? ""}
         categoriesList={categoryNames}
       />

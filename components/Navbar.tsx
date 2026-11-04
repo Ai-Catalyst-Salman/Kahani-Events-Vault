@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useState } from "react";
 import { LogOut, Settings, ChevronDown } from "lucide-react";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
+import { signOutWithTimeout } from "@/lib/clientFetch";
 
 interface NavbarProps {
   email: string;
@@ -21,15 +22,15 @@ export function Navbar({ email, role }: NavbarProps) {
   const [logoutLoading, setLogoutLoading] = useState(false);
 
   const handleLogoutConfirm = async () => {
+    if (logoutLoading) return;
     setLogoutLoading(true);
     try {
-      await (supabase.rpc as any)("log_auth_event", { p_event_type: "LOGOUT" });
-    } catch {
-      // Non-blocking fallback
+      await signOutWithTimeout(supabase);
+    } finally {
+      setLogoutLoading(false);
+      router.push("/login");
+      router.refresh();
     }
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
   };
 
   // Shortened email for small screens

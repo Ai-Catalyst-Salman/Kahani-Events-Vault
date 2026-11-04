@@ -19,8 +19,11 @@ import {
 import {
   uploadFileToR2,
   formatFileSize,
+  saveRemoteFile,
   UploadProgressInfo,
 } from "@/lib/r2Upload";
+import { maxBytesForFolder } from "@/lib/security/uploadPolicy";
+import { safeHttpsUrl, safePresentationEmbed } from "@/lib/security/urls";
 
 interface PresentationUploaderProps {
   value: string;
@@ -28,26 +31,12 @@ interface PresentationUploaderProps {
   disabled?: boolean;
 }
 
-function isPdfFile(url: string, fileName?: string): boolean {
-  const target = (fileName || url).split("?")[0].toLowerCase();
-  return target.endsWith(".pdf") || target.includes("/pdf");
-}
-
-function getEmbedIframeSrc(fileUrl: string, fileName?: string): string {
-  if (isPdfFile(fileUrl, fileName)) {
-    return fileUrl;
+function isPdfFile(url: string): boolean {
+  try {
+    return new URL(url).pathname.toLowerCase().endsWith(".pdf");
+  } catch {
+    return false;
   }
-  // If user pasted a Google Drive link, convert to direct preview embed
-  const gdMatch = fileUrl.match(
-    /drive\.google\.com\/(?:file\/d\/|open\?[^ ]*id=)([a-zA-Z0-9_-]{25,})/
-  );
-  if (gdMatch && gdMatch[1]) {
-    return `https://drive.google.com/file/d/${gdMatch[1]}/preview`;
-  }
-  // Microsoft Office Online Viewer for PPT / PPTX / documents
-  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(
-    fileUrl
-  )}`;
 }
 
 export function PresentationUploader({
@@ -69,6 +58,19 @@ export function PresentationUploader({
   const [isDownloading, setIsDownloading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modalContainerRef = useRef<HTMLDivElement>(null);
+  const uploadSeq = useRef(0);
+  const uploadAbort = useRef<AbortController | null>(null);
+  const downloadAbort = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      uploadAbort.current?.abort();
+      downloadAbort.current?.abort();
+    };
+  }, []);
 
   // Enter Full Screen across the entire window/monitor using HTML5 Fullscreen API
   const enterFullscreen = async () => {
@@ -160,21 +162,21 @@ export function PresentationUploader({
   }, [isPreviewOpen]);
 
   const handleFile = async (file: File) => {
-    const validExtensions = [".pdf", ".ppt", ".pptx"];
-    const hasValidExt = validExtensions.some((ext) =>
-      file.name.toLowerCase().endsWith(ext)
-    );
-
-    if (
-      !hasValidExt &&
-      !file.type.includes("pdf") &&
-      !file.type.includes("presentation")
-    ) {
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    const allowed = ["pdf", "ppt", "pptx"];
+    if (!allowed.includes(extension) || file.size <= 0 || file.size > maxBytesForFolder("presentations")) {
       setErrorMessage(
-        "Please select a valid presentation file (.pdf, .ppt, or .pptx)."
+        file.size > maxBytesForFolder("presentations")
+          ? "Presentations must be 80 MB or smaller."
+          : "Please select a valid presentation file (.pdf, .ppt, or .pptx)."
       );
       return;
     }
+
+    uploadAbort.current?.abort();
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    const seq = ++uploadSeq.current;
 
     setErrorMessage(null);
     setIsUploading(true);
@@ -183,27 +185,37 @@ export function PresentationUploader({
     setUploadedFileSize(file.size);
 
     try {
-      const result = await uploadFileToR2(file, "presentations", (progress) => {
-        setProgressInfo(progress);
-      });
-
-      if (result.publicUrl) {
-        onChange(result.publicUrl);
-      }
-    } catch (err: any) {
-      setErrorMessage(
-        err?.message ||
-          "Failed to complete upload to Cloudflare R2. You can also paste the URL manually."
+      const result = await uploadFileToR2(
+        file,
+        "presentations",
+        (progress) => {
+          if (seq === uploadSeq.current) setProgressInfo(progress);
+        },
+        { signal: controller.signal }
       );
+
+      if (seq !== uploadSeq.current) return;
+      if (result.publicUrl) onChange(result.publicUrl);
+    } catch (err) {
+      if (seq !== uploadSeq.current || (err instanceof DOMException && err.name === "AbortError")) return;
+      setErrorMessage(err instanceof Error ? err.message : "Upload failed. Please try again.");
     } finally {
-      setIsUploading(false);
+      if (seq === uploadSeq.current) setIsUploading(false);
     }
   };
 
+  const cancelUpload = () => {
+    uploadSeq.current += 1;
+    uploadAbort.current?.abort();
+    setIsUploading(false);
+    setProgressInfo(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const onFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFile(e.target.files[0]);
-    }
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) handleFile(file);
   };
 
   const onDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -226,7 +238,10 @@ export function PresentationUploader({
   };
 
   const handleClear = () => {
+    uploadSeq.current += 1;
+    uploadAbort.current?.abort();
     onChange("");
+    setIsUploading(false);
     setUploadedFileName("");
     setUploadedFileSize(0);
     setProgressInfo(null);
@@ -238,39 +253,40 @@ export function PresentationUploader({
 
   const isR2Stored =
     value && (value.includes(".r2.") || value.includes(".r2.dev"));
-  const isPdf = value ? isPdfFile(value, uploadedFileName) : false;
-  const embedSrc = value ? getEmbedIframeSrc(value, uploadedFileName) : "";
+  const embedSrc = safePresentationEmbed(value);
+  const isPdf = embedSrc ? isPdfFile(embedSrc) || isPdfFile(value) : false;
 
   // Direct trigger download in the same tab (strictly no target="_blank")
   const handleDownload = async () => {
-    if (!value || isDownloading) return;
+    const downloadUrl = safeHttpsUrl(value);
+    if (!downloadUrl || isDownloading) return;
+    downloadAbort.current?.abort();
+    const controller = new AbortController();
+    downloadAbort.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     setIsDownloading(true);
     const ext = isPdf ? ".pdf" : ".pptx";
     const downloadName = (uploadedFileName || "presentation_deck").replace(/\.[^/.]+$/, "") + ext;
     try {
-      const response = await fetch(value);
-      if (!response.ok) throw new Error("Fetch failed");
-      const blob = await response.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.style.display = "none";
-      a.href = blobUrl;
-      a.download = downloadName;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
+      await saveRemoteFile(downloadUrl, downloadName, controller.signal);
+    } catch (err) {
+      if (controller.signal.aborted) return;
+      if (err instanceof Error && err.message === "too_large") {
+        setErrorMessage("That file is too large to download in the browser.");
+        return;
+      }
+      if (!controller.signal.aborted) {
+        const a = document.createElement("a");
+        a.href = downloadUrl;
+        a.download = downloadName;
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
         document.body.removeChild(a);
-        window.URL.revokeObjectURL(blobUrl);
-      }, 1000);
-    } catch {
-      const a = document.createElement("a");
-      a.href = value;
-      a.download = downloadName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      }
     } finally {
-      setIsDownloading(false);
+      window.clearTimeout(timeout);
+      if (mounted.current) setIsDownloading(false);
     }
   };
 
@@ -400,9 +416,15 @@ export function PresentationUploader({
                 />
               </div>
 
-              <p className="text-[10px] text-forest-green/70 text-center font-medium">
-                Streaming directly to Cloudflare R2 edge storage. UI remains responsive.
-              </p>
+              <div className="flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={cancelUpload}
+                  className="px-3 py-1.5 rounded-xl border border-dusty-pink/30 text-royal-plum text-[11px] font-bold hover:bg-cream"
+                >
+                  Cancel upload
+                </button>
+              </div>
             </div>
           )}
 
@@ -434,7 +456,13 @@ export function PresentationUploader({
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => setIsPreviewOpen(true)}
+                  onClick={() => {
+                    if (!embedSrc) {
+                      setErrorMessage("This link can't be previewed. Use an https PDF, PowerPoint, or Google Drive file link.");
+                      return;
+                    }
+                    setIsPreviewOpen(true);
+                  }}
                   className="px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 bg-royal-plum text-white shadow-glow-plum hover:bg-royal-plum/90 transition-all cursor-pointer"
                   title="Open in-page preview"
                 >
@@ -495,7 +523,8 @@ export function PresentationUploader({
             type="url"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder="Paste Google Drive, Cloudflare R2, or Office link"
+            placeholder="Paste an https PDF, PowerPoint, or Google Drive link"
+            maxLength={2000}
             disabled={disabled}
             className="w-full px-4 py-3 pr-24 bg-cream/50 border border-dusty-pink/30 rounded-2xl text-royal-plum font-semibold placeholder:text-dusty-pink/60 focus:outline-none focus:ring-2 focus:ring-soft-gold/40 text-xs sm:text-sm shadow-xs"
           />
@@ -503,7 +532,13 @@ export function PresentationUploader({
             {value && (
               <button
                 type="button"
-                onClick={() => setIsPreviewOpen(true)}
+                onClick={() => {
+                  if (!embedSrc) {
+                    setErrorMessage("This link can't be previewed. Use an https PDF, PowerPoint, or Google Drive file link.");
+                    return;
+                  }
+                  setIsPreviewOpen(true);
+                }}
                 className="px-2.5 py-1 bg-royal-plum text-white text-xs font-bold rounded-lg shadow-xs hover:bg-royal-plum/90 transition-all cursor-pointer flex items-center gap-1"
                 title="Preview"
               >
@@ -527,7 +562,7 @@ export function PresentationUploader({
 
       {/* ─── IN-PAGE PREVIEW MODAL (ENTIRE WINDOW FULLSCREEN & IN-TAB DOWNLOAD) ─── */}
       <AnimatePresence>
-        {isPreviewOpen && value && (
+        {isPreviewOpen && embedSrc && (
           <div
             className={`fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md transition-all ${
               isFullscreen ? "p-0" : "p-0 sm:p-3 md:p-6"
@@ -657,6 +692,8 @@ export function PresentationUploader({
                 <iframe
                   src={embedSrc}
                   className="w-full h-full border-none bg-white block absolute inset-0"
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-downloads allow-presentation"
+                  referrerPolicy="no-referrer"
                   allowFullScreen
                   title="Presentation Preview"
                 />

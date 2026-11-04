@@ -148,6 +148,7 @@ export function ThemeFormFields({
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
+              maxLength={160}
               placeholder="e.g. Mithu Aur Anar Ki Shaam"
             />
           </div>
@@ -173,6 +174,7 @@ export function ThemeFormFields({
                   value={inlineCategoryInput}
                   onChange={(e) => setInlineCategoryInput(e.target.value)}
                   placeholder="New category name"
+                  maxLength={80}
                   className="flex-1 px-3 py-1.5 bg-white border border-dusty-pink/30 rounded-lg text-royal-plum text-xs font-medium focus:outline-none"
                 />
                 <button
@@ -238,6 +240,7 @@ export function ThemeFormFields({
             value={kw}
             onChange={(e) => setKw(e.target.value)}
             placeholder="e.g. Parrot and pomegranate, folk charm"
+            maxLength={500}
           />
         </div>
         <div>
@@ -295,6 +298,7 @@ export function ThemeFormFields({
               value={custColor}
               onChange={(e) => setCustColor(e.target.value)}
               placeholder="Add custom color..."
+              maxLength={40}
               className="py-2 text-xs"
             />
             <button
@@ -337,6 +341,7 @@ export function ThemeFormFields({
                 value={pptsLink}
                 onChange={(e) => setPptsLink(e.target.value)}
                 placeholder="https://drive.google.com/..."
+                maxLength={2000}
               />
             </div>
             <div>
@@ -346,6 +351,7 @@ export function ThemeFormFields({
                 value={matLink}
                 onChange={(e) => setMatLink(e.target.value)}
                 placeholder="https://..."
+                maxLength={2000}
               />
             </div>
           </div>
@@ -364,6 +370,7 @@ export function ThemeFormFields({
               value={eventValue}
               onChange={(e) => setEventValue(e.target.value)}
               placeholder="e.g. 7 - 10 Lakh"
+              maxLength={80}
             />
           </div>
           <div>
@@ -372,6 +379,7 @@ export function ThemeFormFields({
               value={venue}
               onChange={(e) => setVenue(e.target.value)}
               placeholder="e.g. Surat, Vapi, Udaipur"
+              maxLength={160}
             />
           </div>
         </div>
@@ -382,6 +390,7 @@ export function ThemeFormFields({
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Special logistics, lighting notes..."
+            maxLength={4000}
             className="w-full px-4 py-3 bg-cream/50 border border-dusty-pink/30 rounded-2xl text-royal-plum text-sm placeholder:text-dusty-pink/60 focus:outline-none focus:ring-2 focus:ring-soft-gold/40"
           />
         </div>

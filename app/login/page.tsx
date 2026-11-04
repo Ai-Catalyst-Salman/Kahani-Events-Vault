@@ -1,41 +1,58 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useRef, Suspense } from "react";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createClient } from "@/lib/supabase/client";
+import { safeInternalPath } from "@/lib/security/urls";
 import { Eye, EyeOff, Lock, Mail, Loader2 } from "lucide-react";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get("redirectTo") || "/";
+  const redirectTo = safeInternalPath(searchParams.get("redirectTo"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const submitLock = useRef(false);
 
   const supabase = createClient();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLock.current) return;
+    submitLock.current = true;
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const result = await Promise.race([
+        supabase.auth.signInWithPassword({ email, password }),
+        new Promise<{ error: { message: string } }>((resolve) => {
+          setTimeout(() => resolve({ error: { message: "timeout" } }), 20000);
+        }),
+      ]);
 
-    if (error) {
-      setError(error.message);
-      setLoading(false);
-    } else {
+      if (result.error) {
+        const message = result.error.message.toLowerCase();
+        if (message === "timeout") setError("Sign-in timed out. Check your connection and try again.");
+        else if (message.includes("rate") || message.includes("too many")) setError("Too many attempts. Wait a moment and try again.");
+        else if (message.includes("invalid") || message.includes("credential")) setError("Email or password is incorrect.");
+        else setError("Unable to sign in. Try again.");
+        return;
+      }
+
       router.push(redirectTo);
       router.refresh();
+    } catch {
+      setError("Unable to sign in. Try again.");
+    } finally {
+      submitLock.current = false;
+      setLoading(false);
     }
   };
 

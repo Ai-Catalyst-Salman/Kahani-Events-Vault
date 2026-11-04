@@ -1,96 +1,60 @@
-import { NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { normalizeImageUrl } from "@/lib/imageUtils";
+import { apiError, apiJson, readJson } from "@/lib/api/respond";
+import { rejectAuth, requireAdmin } from "@/lib/auth/requireAdmin";
+import { allowRequest } from "@/lib/security/rateLimit";
+import { fieldError, parseThemeWrite, resolveThemeCategory } from "@/lib/security/themeInput";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    // 1. Verify admin
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const auth = await requireAdmin();
+    if (!auth.ok) return rejectAuth(auth) ?? apiError("Unauthorized", 401);
+    if (!allowRequest(`theme:create:${auth.userId}`, 20, 60_000)) {
+      return apiError("Too many theme updates. Wait a moment and try again.", 429);
     }
 
-    // Verify admin role via Admin Client (bypasses RLS recursion on profiles table)
-    const adminSupabase = createAdminClient();
-    const { data: profile } = await adminSupabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
+    const body = await readJson(request, 100_000);
+    if (body === "too_large") return apiError("Payload too large.", 413);
+    if (body === "invalid") return apiError("Invalid request.", 400);
 
-    if ((profile as any)?.role !== "admin") {
-      return NextResponse.json({ error: "Forbidden: Admins only" }, { status: 403 });
-    }
+    const parsed = parseThemeWrite(body);
+    if (!parsed.ok) return apiError(fieldError(parsed), 400);
 
-    // 2. Parse payload
-    const body = await request.json();
-    const {
-      theme_name,
-      category,
-      keywords,
-      theme_link,
-      executed_ppts_link,
-      client_persona,
-      color_palette,
-      total_event_value,
-      ideal_venue,
-      launch_status,
-      material_download_link,
-      additional_notes,
-      thumbnail_url,
-      tags,
-    } = body;
+    const categoryId = await resolveThemeCategory(auth.adminSupabase, parsed.value.category);
+    if (!categoryId) return apiError("Category is not recognized.", 400);
 
-    if (!theme_name || !category) {
-      return NextResponse.json(
-        { error: "Theme Name and Category are required." },
-        { status: 400 }
-      );
-    }
-
-    // 3. Insert using Admin Supabase client
-    const { data: theme, error: dbError } = await adminSupabase
+    const { data: theme, error } = await auth.adminSupabase
       .from("event_themes")
       .insert({
-        theme_name,
-        title: theme_name,
-        category,
-        keywords: keywords || null,
-        theme_link: theme_link || null,
-        executed_ppts_link: executed_ppts_link || null,
-        client_persona: client_persona || null,
-        color_palette: Array.isArray(color_palette)
-          ? color_palette
-          : color_palette
-          ? color_palette.split(",").map((c: string) => c.trim()).filter(Boolean)
-          : [],
-        total_event_value: total_event_value || null,
-        ideal_venue: ideal_venue || null,
-        launch_status: launch_status || null,
-        material_download_link: material_download_link || null,
-        additional_notes: additional_notes || null,
-        thumbnail_url: normalizeImageUrl(thumbnail_url) || null,
-        tags: Array.isArray(tags)
-          ? tags
-          : tags
-          ? tags.split(",").map((t: string) => t.trim()).filter(Boolean)
-          : [],
+        theme_name: parsed.value.theme_name,
+        title: parsed.value.theme_name,
+        category: parsed.value.category,
+        category_id: categoryId,
+        keywords: parsed.value.keywords,
+        theme_link: parsed.value.theme_link,
+        executed_ppts_link: parsed.value.executed_ppts_link,
+        client_persona: parsed.value.client_persona,
+        color_palette: parsed.value.color_palette,
+        total_event_value: parsed.value.total_event_value,
+        ideal_venue: parsed.value.ideal_venue,
+        launch_status: parsed.value.launch_status,
+        material_download_link: parsed.value.material_download_link,
+        additional_notes: parsed.value.additional_notes,
+        thumbnail_url: parsed.value.thumbnail_url,
+        tags: parsed.value.tags,
       })
       .select()
-      .single();
+      .maybeSingle();
 
-    if (dbError) {
-      return NextResponse.json({ error: dbError.message }, { status: 500 });
+    if (error || !theme) {
+      console.error("[api/admin/create-theme]", error?.code || "insert_failed");
+      return apiError("Could not save the theme.", 500);
     }
 
-    return NextResponse.json({ success: true, theme });
-  } catch (err: any) {
-    console.error("[api/admin/create-theme] Error:", err);
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+    return apiJson({ success: true, theme });
+  } catch (err) {
+    console.error("[api/admin/create-theme]", err instanceof Error ? err.name : "Error");
+    return apiError("Could not save the theme.", 500);
   }
 }

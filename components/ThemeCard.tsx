@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { Database } from "@/lib/supabase/database.types";
 import { normalizeImageUrl, isGoogleDriveUrl } from "@/lib/imageUtils";
+import { safeHttpsUrl } from "@/lib/security/urls";
 
 type EventTheme = Database["public"]["Tables"]["event_themes"]["Row"];
 
@@ -36,7 +37,8 @@ export function ThemeCard({
   const [favHover, setFavHover] = useState(false);
 
   const displayName = theme.theme_name || theme.title || "Untitled Theme";
-  const presentationLink = theme.theme_link || (theme.r2_file_key ? theme.thumbnail_url : null);
+  const presentationLink = safeHttpsUrl(theme.theme_link || (theme.r2_file_key ? theme.thumbnail_url : null));
+  const materialHref = safeHttpsUrl(theme.material_download_link);
   const safeThumbnailUrl = normalizeImageUrl(theme.thumbnail_url);
   const isGD = isGoogleDriveUrl(safeThumbnailUrl);
 
@@ -187,9 +189,10 @@ export function ThemeCard({
             </span>
           )}
 
-          {theme.material_download_link && (
+          {materialHref && (
             <a
-              href={theme.material_download_link}
+              href={materialHref}
+              rel="noopener noreferrer"
               download
               title="Download Materials"
               onClick={(e) => {

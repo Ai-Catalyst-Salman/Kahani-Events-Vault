@@ -19,6 +19,8 @@ import {
 } from "lucide-react";
 import type { Database } from "@/lib/supabase/database.types";
 import { normalizeImageUrl, isGoogleDriveUrl } from "@/lib/imageUtils";
+import { safeHttpsUrl, safePresentationEmbed } from "@/lib/security/urls";
+import { saveRemoteFile } from "@/lib/r2Upload";
 
 type EventTheme = Database["public"]["Tables"]["event_themes"]["Row"];
 
@@ -31,38 +33,11 @@ interface ThemePreviewModalProps {
 }
 
 function isPdfFile(url: string): boolean {
-  const clean = url.split("?")[0].toLowerCase();
-  return clean.endsWith(".pdf") || clean.includes("/pdf");
-}
-
-function getEmbedUrl(fileUrl: string): { embedSrc: string; isPdf: boolean; isOffice: boolean } {
-  // Google Drive
-  const gdMatch = fileUrl.match(
-    /drive\.google\.com\/(?:file\/d\/|open\?[^ ]*id=)([a-zA-Z0-9_-]{25,})/
-  );
-  if (gdMatch && gdMatch[1]) {
-    return {
-      embedSrc: `https://drive.google.com/file/d/${gdMatch[1]}/preview`,
-      isPdf: false,
-      isOffice: false,
-    };
+  try {
+    return new URL(url).pathname.toLowerCase().endsWith(".pdf");
+  } catch {
+    return false;
   }
-
-  // Native PDF
-  if (isPdfFile(fileUrl)) {
-    return {
-      embedSrc: fileUrl,
-      isPdf: true,
-      isOffice: false,
-    };
-  }
-
-  // Office Viewer for PPT / PPTX / documents
-  return {
-    embedSrc: `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(fileUrl)}`,
-    isPdf: false,
-    isOffice: true,
-  };
 }
 
 export function ThemePreviewModal({
@@ -76,6 +51,16 @@ export function ThemePreviewModal({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const modalContainerRef = useRef<HTMLDivElement>(null);
+  const downloadAbort = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      downloadAbort.current?.abort();
+    };
+  }, []);
 
   // Enter Full Screen across the entire window/monitor using HTML5 Fullscreen API
   const enterFullscreen = async () => {
@@ -169,44 +154,42 @@ export function ThemePreviewModal({
   if (!theme) return null;
 
   const displayName = theme.theme_name || theme.title || "Untitled Theme";
-  const presentationLink =
-    theme.theme_link || (theme.r2_file_key ? theme.thumbnail_url : null);
+  const presentationLink = safeHttpsUrl(
+    theme.theme_link || (theme.r2_file_key ? theme.thumbnail_url : null)
+  );
   const safeThumbnailUrl = normalizeImageUrl(theme.thumbnail_url);
   const isGD = isGoogleDriveUrl(safeThumbnailUrl);
+  const embedSrc = safePresentationEmbed(
+    theme.theme_link || (theme.r2_file_key ? theme.thumbnail_url : null)
+  );
+  const materialHref = safeHttpsUrl(theme.material_download_link);
 
-  const embedInfo = presentationLink ? getEmbedUrl(presentationLink) : null;
   const ext = presentationLink && isPdfFile(presentationLink) ? ".pdf" : ".pptx";
   const downloadFilename = `${displayName.replace(/[^a-zA-Z0-9_-]/g, "_")}${ext}`;
 
-  // Direct download in the same tab without opening new tabs
   const handleDownload = async () => {
     if (!presentationLink || isDownloading) return;
+    downloadAbort.current?.abort();
+    const controller = new AbortController();
+    downloadAbort.current = controller;
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     setIsDownloading(true);
     try {
-      const response = await fetch(presentationLink);
-      if (!response.ok) throw new Error("Fetch failed");
-      const blob = await response.blob();
-      const blobUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.style.display = "none";
-      a.href = blobUrl;
-      a.download = downloadFilename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
+      await saveRemoteFile(presentationLink, downloadFilename, controller.signal);
+    } catch (err) {
+      if (controller.signal.aborted || (err instanceof Error && err.message === "too_large")) return;
+      if (!controller.signal.aborted) {
+        const a = document.createElement("a");
+        a.href = presentationLink;
+        a.download = downloadFilename;
+        a.rel = "noopener noreferrer";
+        document.body.appendChild(a);
+        a.click();
         document.body.removeChild(a);
-        window.URL.revokeObjectURL(blobUrl);
-      }, 1000);
-    } catch {
-      // In-tab direct download fallback (strictly no target="_blank")
-      const a = document.createElement("a");
-      a.href = presentationLink;
-      a.download = downloadFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      }
     } finally {
-      setIsDownloading(false);
+      window.clearTimeout(timeout);
+      if (mounted.current) setIsDownloading(false);
     }
   };
 
@@ -401,9 +384,10 @@ export function ThemePreviewModal({
                   )}
                 </div>
 
-                {theme.material_download_link && (
+                {materialHref && (
                   <a
-                    href={theme.material_download_link}
+                    href={materialHref}
+                    rel="noopener noreferrer"
                     download
                     className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-white border border-dusty-pink/30 hover:border-soft-gold text-royal-plum text-[10px] sm:text-xs font-bold rounded-lg transition-all cursor-pointer ml-auto"
                   >
@@ -416,10 +400,12 @@ export function ThemePreviewModal({
 
             {/* ─── PRESENTATION VIEWER IFRAME (RESPONSIVE FULL HEIGHT) ─── */}
             <div className="flex-1 w-full bg-cream-dark/40 relative overflow-hidden min-h-0">
-              {embedInfo ? (
+              {embedSrc ? (
                 <iframe
-                  src={embedInfo.embedSrc}
+                  src={embedSrc}
                   className="w-full h-full border-none bg-white block absolute inset-0"
+                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-downloads allow-presentation"
+                  referrerPolicy="no-referrer"
                   allowFullScreen
                   title={displayName}
                 />

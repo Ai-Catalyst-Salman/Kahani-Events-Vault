@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
@@ -41,6 +41,8 @@ import {
 } from "lucide-react";
 import type { Database } from "@/lib/supabase/database.types";
 import { normalizeImageUrl, isGoogleDriveUrl } from "@/lib/imageUtils";
+import { errorText, fetchJson, signOutWithTimeout } from "@/lib/clientFetch";
+import { isUuid, passwordIssue, safeHttpsUrl } from "@/lib/security/urls";
 import { AdminSidebar } from "@/components/AdminSidebar";
 import { ThemeFormFields, FieldLabel, FieldInput } from "@/components/ThemeFormFields";
 import { searchThemes } from "@/lib/searchUtils";
@@ -73,21 +75,7 @@ export function AdminClient({
 
   /* ── Data state ── */
   const [themesList, setThemesList] = useState<EventTheme[]>(initialThemes);
-  const [categoriesList, setCategoriesList] = useState<ThemeCategory[]>(
-    initialCategories.length > 0
-      ? initialCategories
-      : [
-          { id: "1", name: "Haldi & Carnival", created_at: "" },
-          { id: "2", name: "Mayra & Mehendi", created_at: "" },
-          { id: "3", name: "Sangeet", created_at: "" },
-          { id: "4", name: "Wedding", created_at: "" },
-          { id: "5", name: "Birthday & Anniversary", created_at: "" },
-          { id: "6", name: "Engagement & Reception", created_at: "" },
-          { id: "7", name: "Cocktail party", created_at: "" },
-          { id: "8", name: "Divine", created_at: "" },
-          { id: "9", name: "Garba night", created_at: "" },
-        ]
-  );
+  const [categoriesList, setCategoriesList] = useState<ThemeCategory[]>(initialCategories);
 
   /* ── Table search/filter ── */
   const [tableSearch, setTableSearch] = useState("");
@@ -96,7 +84,7 @@ export function AdminClient({
 
   /* ── Add Theme form state ── */
   const [themeName, setThemeName] = useState("");
-  const [category, setCategory] = useState(initialCategories[0]?.name || "Haldi & Carnival");
+  const [category, setCategory] = useState(initialCategories[0]?.name || "");
   const [keywords, setKeywords] = useState("");
   const [themeLink, setThemeLink] = useState("");
   const [executedPptsLink, setExecutedPptsLink] = useState("");
@@ -154,6 +142,10 @@ export function AdminClient({
   /* ── Logout modal ── */
   const [showLogoutModal, setShowLogoutModal] = useState(false);
   const [logoutLoading, setLogoutLoading] = useState(false);
+  const themeSubmitLock = useRef(false);
+  const editSubmitLock = useRef(false);
+  const categoryLock = useRef(false);
+  const userSubmitLock = useRef(false);
 
   /* ── Lock body scroll when mobile sidebar open ── */
   useEffect(() => {
@@ -174,17 +166,25 @@ export function AdminClient({
      HANDLERS
   ───────────────────────────────────────────── */
   const handleLogoutConfirm = async () => {
+    if (logoutLoading) return;
     setLogoutLoading(true);
-    try { await (supabase.rpc as any)("log_auth_event", { p_event_type: "LOGOUT" }); } catch {}
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
+    try {
+      await signOutWithTimeout(supabase);
+    } finally {
+      setLogoutLoading(false);
+      router.push("/login");
+      router.refresh();
+    }
   };
 
   const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedLink(id);
-    setTimeout(() => setCopiedLink(null), 2000);
+    navigator.clipboard.writeText(text).then(
+      () => {
+        setCopiedLink(id);
+        setTimeout(() => setCopiedLink(null), 2000);
+      },
+      () => {}
+    );
   };
 
   const toggleColor = (color: string, arr: string[], setter: (v: string[]) => void) => {
@@ -193,20 +193,21 @@ export function AdminClient({
 
   const handleAddCategory = async (nameToAdd: string, isInline = false) => {
     const trimmed = nameToAdd.trim();
-    if (!trimmed) return;
+    if (!trimmed || categoryLock.current) return;
+    categoryLock.current = true;
     setCategoryLoading(true);
     setCategoryMessage(null);
     try {
-      const res = await fetch("/api/admin/categories", {
+      const { ok, data } = await fetchJson("/api/admin/categories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: trimmed }),
       });
-      const data = await res.json();
-      if (res.ok && data.category) {
-        setCategoriesList([...categoriesList, data.category]);
+      const category = data.category as { id: string; name: string; created_at: string } | undefined;
+      if (ok && category) {
+        setCategoriesList([...categoriesList, category]);
         if (isInline) {
-          setCategory(data.category.name);
+          setCategory(category.name);
           setInlineCategoryInput("");
           setShowInlineCatInput(false);
         } else {
@@ -214,15 +215,12 @@ export function AdminClient({
           setCategoryMessage({ success: true, text: `Category "${trimmed}" added!` });
         }
       } else {
-        const errorText = data.error || "Failed to add category.";
-        if (isInline) alert(errorText);
-        else setCategoryMessage({ success: false, text: errorText });
+        const message = errorText(data, "Failed to add category.");
+        if (isInline) alert(message);
+        else setCategoryMessage({ success: false, text: message });
       }
-    } catch {
-      const msg = "Network error. Please try again.";
-      if (isInline) alert(msg);
-      else setCategoryMessage({ success: false, text: msg });
     } finally {
+      categoryLock.current = false;
       setCategoryLoading(false);
     }
   };
@@ -231,24 +229,44 @@ export function AdminClient({
     if (!confirm(`Remove category "${name}"?`)) return;
     setDeletingCatId(id);
     try {
-      const res = await fetch("/api/admin/categories", {
+      const { ok } = await fetchJson("/api/admin/categories", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
-      if (res.ok) setCategoriesList(categoriesList.filter((c) => c.id !== id));
+      if (ok) setCategoriesList(categoriesList.filter((c) => c.id !== id));
       else alert("Failed to delete category.");
-    } catch { alert("Network error."); }
-    finally { setDeletingCatId(null); }
+    } finally {
+      setDeletingCatId(null);
+    }
   };
 
   const handleCreateTheme = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (themeSubmitLock.current) return;
+    if (themeLink && !safeHttpsUrl(themeLink)) {
+      setThemeResult({ success: false, message: "Presentation link must be a public https URL." });
+      return;
+    }
+    if (executedPptsLink && !safeHttpsUrl(executedPptsLink)) {
+      setThemeResult({ success: false, message: "Executed PPTs link must be a public https URL." });
+      return;
+    }
+    if (materialDownloadLink && !safeHttpsUrl(materialDownloadLink)) {
+      setThemeResult({ success: false, message: "Material link must be a public https URL." });
+      return;
+    }
+    if (thumbnailUrl && !normalizeImageUrl(thumbnailUrl)) {
+      setThemeResult({ success: false, message: "Cover image link must be a public https image URL." });
+      return;
+    }
+
+    themeSubmitLock.current = true;
     setThemeLoading(true);
     setThemeResult(null);
     const matchedCat = categoriesList.find((c) => c.name === category);
     try {
-      const res = await fetch("/api/admin/create-theme", {
+      const { ok, data } = await fetchJson("/api/admin/create-theme", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -260,18 +278,20 @@ export function AdminClient({
           thumbnail_url: normalizeImageUrl(thumbnailUrl) || null, additional_notes: additionalNotes,
         }),
       });
-      const data = await res.json();
-      if (res.ok && data.theme) {
+      const theme = data.theme as EventTheme | undefined;
+      if (ok && theme) {
         setThemeResult({ success: true, message: `Theme "${themeName}" published!` });
-        setThemesList([data.theme, ...themesList]);
+        setThemesList([theme, ...themesList]);
         setThemeName(""); setKeywords(""); setThemeLink(""); setExecutedPptsLink("");
         setSelectedColors([]); setTotalEventValue(""); setIdealVenue("");
         setLaunchStatus(""); setMaterialDownloadLink(""); setThumbnailUrl(""); setAdditionalNotes("");
       } else {
-        setThemeResult({ success: false, message: data.error || "Failed to add theme." });
+        setThemeResult({ success: false, message: errorText(data, "Failed to add theme.") });
       }
-    } catch { setThemeResult({ success: false, message: "Network error." }); }
-    finally { setThemeLoading(false); }
+    } finally {
+      themeSubmitLock.current = false;
+      setThemeLoading(false);
+    }
   };
 
   /* ── Open edit panel pre-filled ── */
@@ -295,16 +315,35 @@ export function AdminClient({
 
   const handleUpdateTheme = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingTheme) return;
+    if (!editingTheme || editSubmitLock.current) return;
+    if (editThemeLink && !safeHttpsUrl(editThemeLink)) {
+      setEditResult({ success: false, message: "Presentation link must be a public https URL." });
+      return;
+    }
+    if (editExecutedPptsLink && !safeHttpsUrl(editExecutedPptsLink)) {
+      setEditResult({ success: false, message: "Executed PPTs link must be a public https URL." });
+      return;
+    }
+    if (editMaterialDownloadLink && !safeHttpsUrl(editMaterialDownloadLink)) {
+      setEditResult({ success: false, message: "Material link must be a public https URL." });
+      return;
+    }
+    if (editThumbnailUrl && !normalizeImageUrl(editThumbnailUrl)) {
+      setEditResult({ success: false, message: "Cover image link must be a public https image URL." });
+      return;
+    }
+
+    editSubmitLock.current = true;
     setEditLoading(true);
     setEditResult(null);
     try {
-      const res = await fetch("/api/admin/update-theme", {
+      const matchedCat = categoriesList.find((c) => c.name === editCategory);
+      const { ok, data } = await fetchJson("/api/admin/update-theme", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: editingTheme.id,
-          theme_name: editName, category: editCategory,
+          theme_name: editName, category: editCategory, category_id: matchedCat?.id || null,
           keywords: editKeywords, theme_link: editThemeLink,
           executed_ppts_link: editExecutedPptsLink, client_persona: editClientPersona,
           color_palette: editColors, total_event_value: editTotalEventValue,
@@ -313,52 +352,63 @@ export function AdminClient({
           additional_notes: editAdditionalNotes,
         }),
       });
-      const data = await res.json();
-      if (res.ok && data.theme) {
-        setThemesList(themesList.map((t) => (t.id === data.theme.id ? data.theme : t)));
+      const theme = data.theme as EventTheme | undefined;
+      if (ok && theme) {
+        setThemesList(themesList.map((t) => (t.id === theme.id ? theme : t)));
         setEditResult({ success: true, message: `"${editName}" updated successfully!` });
         setTimeout(() => setEditingTheme(null), 1200);
       } else {
-        setEditResult({ success: false, message: data.error || "Failed to update theme." });
+        setEditResult({ success: false, message: errorText(data, "Failed to update theme.") });
       }
-    } catch { setEditResult({ success: false, message: "Network error." }); }
-    finally { setEditLoading(false); }
+    } finally {
+      editSubmitLock.current = false;
+      setEditLoading(false);
+    }
   };
 
   const handleDeleteTheme = async (id: string, name: string) => {
     if (!confirm(`Remove "${name}" from the Vault?`)) return;
     setDeletingId(id);
     try {
-      const res = await fetch("/api/admin/delete-theme", {
+      const { ok } = await fetchJson("/api/admin/delete-theme", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
-      if (res.ok) setThemesList(themesList.filter((t) => t.id !== id));
+      if (ok) setThemesList(themesList.filter((t) => t.id !== id));
       else alert("Failed to delete theme.");
-    } catch { alert("Network error."); }
-    finally { setDeletingId(null); }
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (userSubmitLock.current) return;
+    const issue = passwordIssue(newPassword);
+    if (issue) {
+      setCreateResult({ success: false, message: issue });
+      return;
+    }
+    userSubmitLock.current = true;
     setCreateLoading(true);
     setCreateResult(null);
     try {
-      const res = await fetch("/api/admin/create-user", {
+      const { ok, data } = await fetchJson("/api/admin/create-user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: newEmail, password: newPassword, role: newRole }),
       });
-      const data = await res.json();
-      if (res.ok) {
+      if (ok) {
         setCreateResult({ success: true, message: `Member ${newEmail} created.` });
         setNewEmail(""); setNewPassword(""); setNewRole("user");
       } else {
-        setCreateResult({ success: false, message: data.error || "Failed to create user." });
+        setCreateResult({ success: false, message: errorText(data, "Failed to create user.") });
       }
-    } catch { setCreateResult({ success: false, message: "Network error." }); }
-    finally { setCreateLoading(false); }
+    } finally {
+      userSubmitLock.current = false;
+      setCreateLoading(false);
+    }
   };
 
   /* ─────────────────────────────────────────────
@@ -773,7 +823,7 @@ export function AdminClient({
                       {categoriesList.map((cat) => (
                         <div key={cat.id} className="flex items-center justify-between p-4 bg-cream/40 rounded-2xl border border-dusty-pink/15 hover:border-soft-gold/40 transition-colors">
                           <div className="flex items-center gap-3"><Tag className="w-4 h-4 text-soft-gold" /><span className="text-sm font-bold text-royal-plum font-bona-nova">{cat.name}</span></div>
-                          {cat.id && (
+                          {isUuid(cat.id) && (
                             <button onClick={() => handleDeleteCategory(cat.id, cat.name)} disabled={deletingCatId === cat.id} title="Delete" className="p-1.5 text-dusty-pink hover:text-red-600 transition-colors cursor-pointer disabled:opacity-50">
                               {deletingCatId === cat.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                             </button>
@@ -801,7 +851,7 @@ export function AdminClient({
                       </div>
                       <div>
                         <FieldLabel>Temporary Password <span className="text-red-500">*</span></FieldLabel>
-                        <FieldInput type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={8} placeholder="Min. 8 characters" />
+                        <FieldInput type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={10} maxLength={72} placeholder="10–72 characters, with a letter and a number" autoComplete="new-password" />
                       </div>
                       <div>
                         <FieldLabel>Role</FieldLabel>

@@ -1,52 +1,41 @@
-import { NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { apiError, apiJson, readJson } from "@/lib/api/respond";
+import { rejectAuth, requireAdmin } from "@/lib/auth/requireAdmin";
+import { allowRequest } from "@/lib/security/rateLimit";
+import { isUuid } from "@/lib/security/urls";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    // 1. Verify authenticated session
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const auth = await requireAdmin();
+    if (!auth.ok) return rejectAuth(auth) ?? apiError("Unauthorized", 401);
+    if (!allowRequest(`theme:delete:${auth.userId}`, 30, 60_000)) {
+      return apiError("Too many delete requests. Wait a moment and try again.", 429);
     }
 
-    // 2. Verify admin role via Admin Client (bypasses RLS recursion)
-    const adminSupabase = createAdminClient();
-    const { data: profile } = await adminSupabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
+    const body = await readJson(request, 8_192);
+    if (body === "too_large") return apiError("Payload too large.", 413);
+    if (body === "invalid") return apiError("Invalid request.", 400);
+    const id = body && typeof body === "object" ? (body as { id?: unknown }).id : null;
+    if (!isUuid(id)) return apiError("A valid theme id is required.", 400);
 
-    if ((profile as any)?.role !== "admin") {
-      return NextResponse.json({ error: "Forbidden: Admins only" }, { status: 403 });
-    }
-
-    // 3. Parse and validate body
-    const body = await request.json();
-    const { id } = body;
-
-    if (!id) {
-      return NextResponse.json({ error: "Theme ID is required" }, { status: 400 });
-    }
-
-    // 4. Delete theme
-    const { error: deleteError } = await adminSupabase
+    const { data: existing } = await auth.adminSupabase
       .from("event_themes")
-      .delete()
-      .eq("id", id);
+      .select("id")
+      .eq("id", id)
+      .maybeSingle();
+    if (!existing) return apiError("Theme not found.", 404);
 
-    if (deleteError) {
-      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    const { error } = await auth.adminSupabase.from("event_themes").delete().eq("id", id);
+    if (error) {
+      console.error("[api/admin/delete-theme]", error.code);
+      return apiError("Could not delete the theme.", 500);
     }
 
-    return NextResponse.json({ success: true });
-  } catch (err: any) {
-    console.error("[api/admin/delete-theme] Error:", err);
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+    return apiJson({ success: true });
+  } catch (err) {
+    console.error("[api/admin/delete-theme]", err instanceof Error ? err.name : "Error");
+    return apiError("Could not delete the theme.", 500);
   }
 }

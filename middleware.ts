@@ -1,6 +1,32 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const pageViewAt = new Map<string, number>();
+
+function clientIp(request: NextRequest): string {
+  if (request.ip) return request.ip.slice(0, 64);
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) {
+    const hops = forwarded.split(",").map((part) => part.trim()).filter(Boolean);
+    const last = hops[hops.length - 1];
+    if (last) return last.slice(0, 64);
+  }
+  return (request.headers.get("x-real-ip") || "unknown").slice(0, 64);
+}
+
+function shouldLogPageView(userId: string): boolean {
+  const now = Date.now();
+  const previous = pageViewAt.get(userId) || 0;
+  if (now - previous < 10 * 60 * 1000) return false;
+  if (pageViewAt.size > 2000) {
+    for (const [id, at] of pageViewAt) {
+      if (now - at > 10 * 60 * 1000) pageViewAt.delete(id);
+    }
+  }
+  pageViewAt.set(userId, now);
+  return true;
+}
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request,
@@ -41,6 +67,16 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith(route)
   );
 
+  // Redirect unauthenticated API calls with a JSON 401. Page routes go to login.
+  if (!user && pathname.startsWith("/api")) {
+    const unauthorized = NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    unauthorized.headers.set("Cache-Control", "no-store");
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      unauthorized.cookies.set(cookie);
+    });
+    return unauthorized;
+  }
+
   // Redirect unauthenticated users to login
   if (!user && !isPublicRoute) {
     const redirectUrl = request.nextUrl.clone();
@@ -57,25 +93,20 @@ export async function middleware(request: NextRequest) {
   }
 
   // Fire-and-forget access log — never blocks the request
-  if (user && !isPublicRoute && !pathname.startsWith("/api")) {
-    const ip =
-      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-      request.headers.get("x-real-ip") ||
-      "unknown";
-
-    const city = request.headers.get("x-vercel-ip-city") || "";
-    const country = request.headers.get("x-vercel-ip-country") || "";
-    const location = [city, country].filter(Boolean).join(", ") || "Unknown";
-    const userAgent = request.headers.get("user-agent") || "";
+  if (user && !isPublicRoute && !pathname.startsWith("/api") && shouldLogPageView(user.id)) {
+    const city = (request.headers.get("x-vercel-ip-city") || "").slice(0, 80);
+    const country = (request.headers.get("x-vercel-ip-country") || "").slice(0, 8);
+    const location = [city, country].filter(Boolean).join(", ").slice(0, 120) || "Unknown";
+    const userAgent = (request.headers.get("user-agent") || "").slice(0, 300);
 
     Promise.resolve(
       supabase.rpc("log_access", {
         p_user_id: user.id,
         p_email: user.email ?? null,
-        p_ip_address: ip,
+        p_ip_address: clientIp(request),
         p_location: location,
         p_user_agent: userAgent,
-        p_event_type: "LOGIN",
+        p_event_type: "PAGE_VIEW",
       })
     ).catch(() => {
       // Silently fail — never block the user

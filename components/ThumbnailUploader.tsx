@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { normalizeImageUrl, isGoogleDriveUrl } from "@/lib/imageUtils";
 import { uploadFileToR2, formatFileSize } from "@/lib/r2Upload";
+import { maxBytesForFolder } from "@/lib/security/uploadPolicy";
 
 interface ThumbnailUploaderProps {
   value: string;
@@ -37,6 +38,14 @@ export function ThumbnailUploader({
 
   const [imgStatus, setImgStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadSeq = useRef(0);
+  const uploadAbort = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      uploadAbort.current?.abort();
+    };
+  }, []);
 
   const normalizedUrl = normalizeImageUrl(value);
   const isGD = isGoogleDriveUrl(value);
@@ -48,24 +57,50 @@ export function ThumbnailUploader({
       setImgStatus("idle");
       return;
     }
+    let cancelled = false;
     setImgStatus("loading");
 
     const testImg = new window.Image();
-    testImg.onload = () => setImgStatus("success");
-    testImg.onerror = () => setImgStatus("error");
+    const timer = window.setTimeout(() => {
+      if (!cancelled) setImgStatus("error");
+      testImg.src = "";
+    }, 12000);
+    testImg.onload = () => {
+      if (cancelled) return;
+      window.clearTimeout(timer);
+      setImgStatus("success");
+    };
+    testImg.onerror = () => {
+      if (cancelled) return;
+      window.clearTimeout(timer);
+      setImgStatus("error");
+    };
     testImg.src = normalizedUrl;
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
       testImg.onload = null;
       testImg.onerror = null;
     };
   }, [normalizedUrl]);
 
   const handleFile = async (file: File) => {
-    if (!file.type.startsWith("image/")) {
-      setErrorMessage("Please select a valid image file (JPEG, PNG, WebP, SVG).");
+    const extension = file.name.split(".").pop()?.toLowerCase() || "";
+    const allowed = ["jpg", "jpeg", "png", "webp", "gif"];
+    if (extension === "svg" || file.type === "image/svg+xml" || !allowed.includes(extension)) {
+      setErrorMessage("Please select a JPEG, PNG, WebP, or GIF image.");
       return;
     }
+    if (file.size <= 0 || file.size > maxBytesForFolder("thumbnails")) {
+      setErrorMessage("Cover images must be 8 MB or smaller.");
+      return;
+    }
+
+    uploadAbort.current?.abort();
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    const seq = ++uploadSeq.current;
 
     setErrorMessage(null);
     setIsUploading(true);
@@ -74,26 +109,37 @@ export function ThumbnailUploader({
     setUploadedFileSize(file.size);
 
     try {
-      const result = await uploadFileToR2(file, "thumbnails", (progress) => {
-        setUploadProgress(progress.percent);
-      });
-
-      if (result.publicUrl) {
-        onChange(result.publicUrl);
-      }
-    } catch (err: any) {
-      setErrorMessage(
-        err?.message || "Failed to upload image to Cloudflare R2. You can also paste the URL manually."
+      const result = await uploadFileToR2(
+        file,
+        "thumbnails",
+        (progress) => {
+          if (seq === uploadSeq.current) setUploadProgress(progress.percent);
+        },
+        { signal: controller.signal }
       );
+
+      if (seq !== uploadSeq.current) return;
+      if (result.publicUrl) onChange(result.publicUrl);
+    } catch (err) {
+      if (seq !== uploadSeq.current || (err instanceof DOMException && err.name === "AbortError")) return;
+      setErrorMessage(err instanceof Error ? err.message : "Upload failed. Please try again.");
     } finally {
-      setIsUploading(false);
+      if (seq === uploadSeq.current) setIsUploading(false);
     }
   };
 
+  const cancelUpload = () => {
+    uploadSeq.current += 1;
+    uploadAbort.current?.abort();
+    setIsUploading(false);
+    setUploadProgress(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const onFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFile(e.target.files[0]);
-    }
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) handleFile(file);
   };
 
   const onDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -116,7 +162,10 @@ export function ThumbnailUploader({
   };
 
   const handleClear = () => {
+    uploadSeq.current += 1;
+    uploadAbort.current?.abort();
     onChange("");
+    setIsUploading(false);
     setUploadedFileName("");
     setUploadedFileSize(0);
     setErrorMessage(null);
@@ -162,7 +211,7 @@ export function ThumbnailUploader({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
             onChange={onFileInputChange}
             className="hidden"
             disabled={disabled || isUploading}
@@ -192,7 +241,7 @@ export function ThumbnailUploader({
                     Click to browse or drag & drop cover image
                   </p>
                   <p className="text-[11px] text-forest-green/70 mt-0.5">
-                    PNG, JPG, WebP, or SVG. Stored directly on Cloudflare R2 CDN.
+                    PNG, JPG, WebP, or GIF up to 8 MB. Stored directly on Cloudflare R2.
                   </p>
                 </div>
               </div>
@@ -223,6 +272,15 @@ export function ThumbnailUploader({
                   className="h-full bg-plum-gradient rounded-full transition-all duration-150"
                   style={{ width: `${uploadProgress}%` }}
                 />
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={cancelUpload}
+                  className="px-3 py-1.5 rounded-xl border border-dusty-pink/30 text-royal-plum text-[11px] font-bold hover:bg-cream"
+                >
+                  Cancel upload
+                </button>
               </div>
             </div>
           )}
@@ -259,7 +317,8 @@ export function ThumbnailUploader({
             type="url"
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder="Paste image link (e.g. Google Drive, Cloudflare R2, Unsplash...)"
+            placeholder="Paste a public https image link"
+            maxLength={2000}
             disabled={disabled}
             className="w-full px-4 py-3 pr-10 bg-cream/50 border border-dusty-pink/30 rounded-2xl text-royal-plum font-semibold placeholder:text-dusty-pink/60 focus:outline-none focus:ring-2 focus:ring-soft-gold/40 text-xs sm:text-sm shadow-xs"
           />

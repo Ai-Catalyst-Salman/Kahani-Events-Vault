@@ -1,94 +1,70 @@
-import { NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { apiError, apiJson, readJson } from "@/lib/api/respond";
+import { rejectAuth, requireAdmin } from "@/lib/auth/requireAdmin";
+import { allowRequest } from "@/lib/security/rateLimit";
+import { LIMITS, passwordIssue } from "@/lib/security/urls";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(request: Request) {
   try {
-    // 1. Verify the requesting user is authenticated via cookie session
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized: Please sign in." }, { status: 401 });
+    const auth = await requireAdmin();
+    if (!auth.ok) return rejectAuth(auth) ?? apiError("Unauthorized", 401);
+    if (!allowRequest(`user:create:${auth.userId}`, 5, 60_000)) {
+      return apiError("Too many account requests. Wait a moment and try again.", 429);
     }
 
-    // 2. Verify admin role using Admin Client to bypass RLS recursion
-    const adminSupabase = createAdminClient();
-    const { data: profile } = await adminSupabase
-      .from("profiles")
-      .select("role")
-      .eq("id", user.id)
-      .single();
+    const body = await readJson(request, 8_192);
+    if (body === "too_large") return apiError("Payload too large.", 413);
+    if (body === "invalid" || !body || typeof body !== "object") return apiError("Invalid request.", 400);
+    const record = body as Record<string, unknown>;
 
-    if (profile?.role !== "admin") {
-      return NextResponse.json({ error: "Forbidden: Admin privileges required." }, { status: 403 });
+    const email = typeof record.email === "string" ? record.email.trim().toLowerCase() : "";
+    const password = typeof record.password === "string" ? record.password : "";
+    const role = record.role;
+
+    if (!EMAIL_PATTERN.test(email) || email.length > LIMITS.email) {
+      return apiError("A valid email is required.", 400);
     }
+    const passwordProblem = passwordIssue(password);
+    if (passwordProblem) return apiError(passwordProblem, 400);
+    if (role !== "admin" && role !== "user") return apiError("Invalid role specified.", 400);
 
-    // 3. Parse request payload
-    const body = await request.json();
-    const { email, password, role } = body as {
-      email: string;
-      password: string;
-      role: "admin" | "user";
-    };
+    const { data: created, error: createError } = await auth.adminSupabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+    });
 
-    if (!email || !password) {
-      return NextResponse.json(
-        { error: "Email and password are required." },
-        { status: 400 }
+    if (createError || !created.user) {
+      const duplicate = (createError?.message || "").toLowerCase().includes("already");
+      console.error("[api/admin/create-user]", createError?.status || "create_failed");
+      return apiError(
+        duplicate ? "An account with that email already exists." : "Could not create the account.",
+        400
       );
     }
 
-    if (!["admin", "user"].includes(role)) {
-      return NextResponse.json({ error: "Invalid role specified." }, { status: 400 });
-    }
-
-    // 4. Create user using Admin client — does not affect the current admin session
-    const { data: newUser, error: createError } =
-      await adminSupabase.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-      });
-
-    if (createError) {
-      return NextResponse.json({ error: createError.message }, { status: 400 });
-    }
-
-    if (!newUser?.user) {
-      return NextResponse.json({ error: "Failed to generate user record." }, { status: 500 });
-    }
-
-    // 5. Upsert role into profiles table
-    const { error: profileError } = await adminSupabase
-      .from("profiles")
-      .upsert({
-        id: newUser.user.id,
-        email: newUser.user.email!,
-        role,
-      });
+    const { error: profileError } = await auth.adminSupabase.from("profiles").upsert({
+      id: created.user.id,
+      email: created.user.email!,
+      role,
+    });
 
     if (profileError) {
-      // Rollback: delete auth user if profile upsert fails
-      await adminSupabase.auth.admin.deleteUser(newUser.user.id);
-      return NextResponse.json(
-        { error: `Profile provisioning failed: ${profileError.message}. User creation rolled back.` },
-        { status: 500 }
-      );
+      await auth.adminSupabase.auth.admin.deleteUser(created.user.id);
+      console.error("[api/admin/create-user]", profileError.code);
+      return apiError("Could not create the account.", 500);
     }
 
-    return NextResponse.json({
+    return apiJson({
       success: true,
-      user: {
-        id: newUser.user.id,
-        email: newUser.user.email,
-        role,
-      },
+      user: { id: created.user.id, email: created.user.email, role },
     });
-  } catch (err: any) {
-    console.error("[api/admin/create-user] Error:", err);
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+  } catch (err) {
+    console.error("[api/admin/create-user]", err instanceof Error ? err.name : "Error");
+    return apiError("Could not create the account.", 500);
   }
 }

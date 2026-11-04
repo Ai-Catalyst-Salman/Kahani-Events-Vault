@@ -1,115 +1,103 @@
-import { NextResponse } from "next/server";
-import { createClient as createServerClient } from "@/lib/supabase/server";
+import { apiError, apiJson, readJson } from "@/lib/api/respond";
+import { rejectAuth, requireAdmin, requireUserId } from "@/lib/auth/requireAdmin";
+import { allowRequest } from "@/lib/security/rateLimit";
+import { LIMITS, isUuid, readText } from "@/lib/security/urls";
+import { fieldError } from "@/lib/security/themeInput";
 import { createAdminClient } from "@/lib/supabase/admin";
 
-// Helper: verify session + admin role — bypasses RLS using service role key
-async function verifyAdmin() {
-  const supabase = await createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-  if (!user) return { user: null, adminSupabase: null, error: "Unauthorized" };
-
-  const adminSupabase = createAdminClient();
-  const { data: profile } = await adminSupabase
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  if ((profile as any)?.role !== "admin") {
-    return { user: null, adminSupabase: null, error: "Forbidden: Admins only" };
-  }
-
-  return { user, adminSupabase, error: null };
-}
-
-// GET: Fetch all theme categories (authenticated users only)
 export async function GET() {
   try {
-    const supabase = await createServerClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const auth = await requireUserId();
+    if (!auth.ok) return rejectAuth(auth) ?? apiError("Unauthorized", 401);
 
     const adminSupabase = createAdminClient();
-    const { data: categories, error } = await adminSupabase
+    const { data, error } = await adminSupabase
       .from("theme_categories")
-      .select("*")
+      .select("id, name, created_at")
       .order("name", { ascending: true });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[api/admin/categories GET]", error.code);
+      return apiError("Could not load categories.", 500);
     }
 
-    return NextResponse.json({ categories: categories ?? [] });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+    return apiJson({ categories: data ?? [] });
+  } catch (err) {
+    console.error("[api/admin/categories GET]", err instanceof Error ? err.name : "Error");
+    return apiError("Could not load categories.", 500);
   }
 }
 
-// POST: Add new theme category (Admin only)
 export async function POST(request: Request) {
   try {
-    const { adminSupabase, error: authError } = await verifyAdmin();
-    if (authError || !adminSupabase) {
-      return NextResponse.json({ error: authError }, { status: authError === "Unauthorized" ? 401 : 403 });
+    const auth = await requireAdmin();
+    if (!auth.ok) return rejectAuth(auth) ?? apiError("Unauthorized", 401);
+    if (!allowRequest(`category:create:${auth.userId}`, 20, 60_000)) {
+      return apiError("Too many category updates. Wait a moment and try again.", 429);
     }
 
-    const body = await request.json();
-    const name = (body.name || "").trim();
+    const body = await readJson(request, 8_192);
+    if (body === "too_large") return apiError("Payload too large.", 413);
+    if (body === "invalid") return apiError("Invalid request.", 400);
+    const name = readText(
+      body && typeof body === "object" ? (body as { name?: unknown }).name : null,
+      LIMITS.categoryName,
+      "Category name",
+      true
+    );
+    if (!name.ok || !name.value) return apiError(fieldError(name), 400);
 
-    if (!name) {
-      return NextResponse.json({ error: "Category name is required" }, { status: 400 });
-    }
-
-    const { data: category, error: insertError } = await adminSupabase
+    const { data, error } = await auth.adminSupabase
       .from("theme_categories")
-      .insert({ name })
-      .select()
-      .single();
+      .insert({ name: name.value })
+      .select("id, name, created_at")
+      .maybeSingle();
 
-    if (insertError) {
-      return NextResponse.json({ error: insertError.message }, { status: 400 });
+    if (error || !data) {
+      console.error("[api/admin/categories POST]", error?.code || "insert_failed");
+      return apiError(error?.code === "23505" ? "That category already exists." : "Could not save the category.", 400);
     }
 
-    return NextResponse.json({ success: true, category });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+    return apiJson({ success: true, category: data });
+  } catch (err) {
+    console.error("[api/admin/categories POST]", err instanceof Error ? err.name : "Error");
+    return apiError("Could not save the category.", 500);
   }
 }
 
-// DELETE: Delete a category (Admin only)
 export async function DELETE(request: Request) {
   try {
-    const { adminSupabase, error: authError } = await verifyAdmin();
-    if (authError || !adminSupabase) {
-      return NextResponse.json({ error: authError }, { status: authError === "Unauthorized" ? 401 : 403 });
+    const auth = await requireAdmin();
+    if (!auth.ok) return rejectAuth(auth) ?? apiError("Unauthorized", 401);
+    if (!allowRequest(`category:delete:${auth.userId}`, 20, 60_000)) {
+      return apiError("Too many category updates. Wait a moment and try again.", 429);
     }
 
-    const body = await request.json();
-    const { id } = body;
+    const body = await readJson(request, 8_192);
+    if (body === "too_large") return apiError("Payload too large.", 413);
+    if (body === "invalid") return apiError("Invalid request.", 400);
+    const id = body && typeof body === "object" ? (body as { id?: unknown }).id : null;
+    if (!isUuid(id)) return apiError("A valid category id is required.", 400);
 
-    if (!id) {
-      return NextResponse.json({ error: "Category ID is required" }, { status: 400 });
-    }
-
-    const { error: deleteError } = await adminSupabase
+    const { data: existing } = await auth.adminSupabase
       .from("theme_categories")
-      .delete()
-      .eq("id", id);
+      .select("id")
+      .eq("id", id)
+      .maybeSingle();
+    if (!existing) return apiError("Category not found.", 404);
 
-    if (deleteError) {
-      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    const { error } = await auth.adminSupabase.from("theme_categories").delete().eq("id", id);
+    if (error) {
+      console.error("[api/admin/categories DELETE]", error.code);
+      return apiError("Could not delete the category.", 500);
     }
 
-    return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Internal server error" }, { status: 500 });
+    return apiJson({ success: true });
+  } catch (err) {
+    console.error("[api/admin/categories DELETE]", err instanceof Error ? err.name : "Error");
+    return apiError("Could not delete the category.", 500);
   }
 }

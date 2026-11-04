@@ -1,3 +1,12 @@
+import {
+  PRESENTATION_MAX_BYTES,
+  extensionForUpload,
+  maxBytesForFolder,
+  mimeFromExtension,
+  normalizeDeclaredMime,
+  type UploadFolder,
+} from "@/lib/security/uploadPolicy";
+
 export interface UploadProgressInfo {
   percent: number;
   loaded: number;
@@ -20,30 +29,49 @@ export interface R2UploadResult {
  * Resolves the precise MIME type from file or extension to prevent browser
  * fallback to generic application/octet-stream which triggers forced download.
  */
-export function getExactMimeType(file: File): string {
-  if (file.type && file.type !== "application/octet-stream" && file.type.length > 3) {
-    return file.type;
+export function getExactMimeType(file: File): string | null {
+  const fromName = mimeFromExtension(file.name);
+  const declared = normalizeDeclaredMime(file.type);
+  if (declared && declared !== "application/octet-stream") {
+    if (!fromName || fromName === declared) return extensionForUpload("presentations", declared) || extensionForUpload("thumbnails", declared) ? declared : null;
+    return null;
   }
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  switch (ext) {
-    case "pdf":
-      return "application/pdf";
-    case "ppt":
-      return "application/vnd.ms-powerpoint";
-    case "pptx":
-      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    case "png":
-      return "image/png";
-    case "jpg":
-    case "jpeg":
-      return "image/jpeg";
-    case "webp":
-      return "image/webp";
-    case "svg":
-      return "image/svg+xml";
-    default:
-      return file.type || "application/octet-stream";
+  return fromName;
+}
+
+function clientMessage(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 200) return fallback;
+  if (/secret|credential|stack trace|access key|service_role|BEGIN |eyJ/i.test(value)) return fallback;
+  return value;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  parent?: AbortSignal
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort = () => controller.abort();
+  if (parent?.aborted) controller.abort();
+  else parent?.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (parent?.aborted) throw err;
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("UPLOAD_TIMEOUT");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    parent?.removeEventListener("abort", onAbort);
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 
 /** Formats byte counts into readable strings (e.g. 14.8 MB) */
@@ -71,35 +99,57 @@ export function formatSpeed(bytesPerSec: number): string {
  */
 export async function uploadFileToR2(
   file: File,
-  folder: "presentations" | "thumbnails" = "presentations",
-  onProgress?: (progress: UploadProgressInfo) => void
+  folder: UploadFolder = "presentations",
+  onProgress?: (progress: UploadProgressInfo) => void,
+  options?: { signal?: AbortSignal }
 ): Promise<R2UploadResult> {
+  const signal = options?.signal;
   const exactMimeType = getExactMimeType(file);
+  if (!exactMimeType || !extensionForUpload(folder, exactMimeType)) {
+    throw new Error("This file type is not allowed.");
+  }
+  if (file.size <= 0 || file.size > maxBytesForFolder(folder)) {
+    throw new Error(
+      folder === "thumbnails"
+        ? "Cover images must be 8 MB or smaller."
+        : "Presentations must be 80 MB or smaller."
+    );
+  }
 
-  // 1. Request presigned URL from backend route
   let presignRes: Response;
   try {
-    presignRes = await fetch("/api/r2-upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fileName: file.name,
-        fileType: exactMimeType,
-        folder,
-      }),
-    });
-  } catch (err: any) {
-    throw new Error(err?.message || "Failed to connect to the upload service.");
+    presignRes = await fetchWithTimeout(
+      "/api/r2-upload",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: file.name,
+          fileType: exactMimeType,
+          fileSize: file.size,
+          folder,
+        }),
+      },
+      20_000,
+      signal
+    );
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    if (err instanceof Error && err.message === "UPLOAD_TIMEOUT") throw err;
+    throw new Error("Failed to connect to the upload service.");
   }
 
   if (!presignRes.ok) {
     const errorData = await presignRes.json().catch(() => ({}));
-    throw new Error(errorData.error || `Upload authorization failed with HTTP ${presignRes.status}`);
+    throw new Error(clientMessage(errorData.error, "Upload was rejected."));
   }
 
-  const { uploadUrl, fileKey, publicUrl } = await presignRes.json();
-  if (!uploadUrl) {
-    throw new Error("Cloudflare R2 pre-signed upload URL was not returned.");
+  const presignBody = await presignRes.json().catch(() => ({}));
+  const uploadUrl = typeof presignBody.uploadUrl === "string" ? presignBody.uploadUrl : "";
+  const fileKey = typeof presignBody.fileKey === "string" ? presignBody.fileKey : "";
+  const uploadToken = typeof presignBody.uploadToken === "string" ? presignBody.uploadToken : "";
+  if (!uploadUrl.startsWith("https://") || !fileKey || !uploadToken) {
+    throw new Error("Upload could not be prepared.");
   }
 
   // 2. Direct asynchronous binary PUT upload to Cloudflare R2
@@ -107,8 +157,12 @@ export async function uploadFileToR2(
     await new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", uploadUrl, true);
-      xhr.setRequestHeader("Content-Type", exactMimeType);
-      xhr.setRequestHeader("Content-Disposition", "inline");
+      xhr.timeout = folder === "thumbnails" ? 90_000 : 600_000;
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("Content-Disposition", "attachment");
+      if (signal) {
+        signal.addEventListener("abort", () => xhr.abort(), { once: true });
+      }
 
       let lastTime = performance.now();
       let lastLoaded = 0;
@@ -158,30 +212,52 @@ export async function uploadFileToR2(
           });
           resolve();
         } else {
-          reject(
-            new Error(
-              `Cloudflare R2 returned HTTP ${xhr.status}. Verify bucket permissions.`
-            )
-          );
+          reject(new Error("DIRECT_UPLOAD_FAILED"));
         }
       };
 
       xhr.onerror = () => {
         reject(new Error("CORS_OR_NETWORK_ERROR"));
       };
+      xhr.ontimeout = () => {
+        reject(new Error("UPLOAD_TIMEOUT"));
+      };
+      xhr.onabort = () => {
+        reject(new DOMException("Aborted", "AbortError"));
+      };
 
       xhr.send(file);
     });
 
-    const finalPublicUrl = publicUrl || uploadUrl.split("?")[0];
+    const verifyRes = await fetchWithTimeout(
+      "/api/r2-upload",
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileKey, uploadToken }),
+      },
+      30_000,
+      signal
+    );
+    const verifyBody = await verifyRes.json().catch(() => ({}));
+    if (!verifyRes.ok || typeof verifyBody.publicUrl !== "string") {
+      throw new Error(clientMessage(verifyBody.error, "Uploaded file was rejected."));
+    }
+
     return {
       success: true,
       fileKey,
-      publicUrl: finalPublicUrl,
+      publicUrl: verifyBody.publicUrl,
     };
-  } catch (directErr: any) {
-    // If CORS or direct upload error occurs, transparently fall back to server-side streaming proxy
-    if (directErr.message === "CORS_OR_NETWORK_ERROR" || directErr.message.includes("CORS")) {
+  } catch (directErr) {
+    if (isAbortError(directErr)) throw directErr;
+    const message = directErr instanceof Error ? directErr.message : "";
+    if (message === "UPLOAD_TIMEOUT") {
+      throw new Error("Upload timed out because the connection stalled. Please try again.");
+    }
+    if (message !== "CORS_OR_NETWORK_ERROR" && message !== "DIRECT_UPLOAD_FAILED") {
+      throw new Error(clientMessage(message, "Upload failed. Please try again."));
+    }
       onProgress?.({
         percent: 50,
         loaded: Math.floor(file.size * 0.5),
@@ -197,16 +273,19 @@ export async function uploadFileToR2(
       formData.append("file", file);
       formData.append("folder", folder);
 
-      const serverRes = await fetch("/api/r2-upload", {
-        method: "PUT",
-        body: formData,
-      });
+      const serverRes = await fetchWithTimeout(
+        "/api/r2-upload",
+        {
+          method: "PUT",
+          body: formData,
+        },
+        folder === "thumbnails" ? 90_000 : 600_000,
+        signal
+      );
 
       if (!serverRes.ok) {
         const errJson = await serverRes.json().catch(() => ({}));
-        throw new Error(
-          errJson.error || "Upload failed through server proxy. Please verify Cloudflare R2 credentials."
-        );
+        throw new Error(clientMessage(errJson.error, "Upload failed. Please try again."));
       }
 
       const serverData = await serverRes.json();
@@ -221,12 +300,47 @@ export async function uploadFileToR2(
         estimatedSecondsRemaining: 0,
       });
 
+      if (typeof serverData.publicUrl !== "string") {
+        throw new Error("Upload failed. Please try again.");
+      }
       return {
         success: true,
         fileKey: serverData.fileKey,
         publicUrl: serverData.publicUrl,
       };
-    }
-    throw directErr;
   }
+}
+
+export async function saveRemoteFile(url: string, filename: string, signal: AbortSignal): Promise<void> {
+  const response = await fetch(url, { signal, referrerPolicy: "no-referrer" });
+  if (!response.ok) throw new Error("Fetch failed");
+  const declared = Number(response.headers.get("content-length") || 0);
+  if (declared > PRESENTATION_MAX_BYTES) throw new Error("too_large");
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Fetch failed");
+  const chunks: BlobPart[] = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    received += value.byteLength;
+    if (received > PRESENTATION_MAX_BYTES) {
+      await reader.cancel();
+      throw new Error("too_large");
+    }
+    chunks.push(value);
+  }
+
+  const blobUrl = URL.createObjectURL(new Blob(chunks));
+  const anchor = document.createElement("a");
+  const safeName = filename.replace(/[^\w.\- ]+/g, "_").slice(0, 120) || "presentation";
+  anchor.href = blobUrl;
+  anchor.download = safeName;
+  anchor.rel = "noopener noreferrer";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
