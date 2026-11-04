@@ -19,6 +19,7 @@ interface AdminSidebarProps {
   setActiveTab: (tab: "add-theme" | "all-themes" | "categories" | "users" | "logs") => void;
   themesCount: number;
   categoriesCount: number;
+  membersCount: number;
   onSignOutClick: () => void;
   onNavClick?: () => void;
 }
@@ -29,6 +30,7 @@ export function AdminSidebar({
   setActiveTab,
   themesCount,
   categoriesCount,
+  membersCount,
   onSignOutClick,
   onNavClick,
 }: AdminSidebarProps) {
@@ -36,7 +38,7 @@ export function AdminSidebar({
     { id: "add-theme" as const, label: "Add New Theme", icon: PlusCircle, badge: "Create" },
     { id: "all-themes" as const, label: "Showroom Themes", icon: Layers, badge: `${themesCount}` },
     { id: "categories" as const, label: "Theme Categories", icon: FolderPlus, badge: `${categoriesCount}` },
-    { id: "users" as const, label: "Team Members", icon: UserPlus, badge: null },
+    { id: "users" as const, label: "Team Members", icon: UserPlus, badge: `${membersCount}` },
     { id: "logs" as const, label: "Audit & Access Logs", icon: Shield, badge: "Live" },
   ];
 

@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { redirect } from "next/navigation";
 import { AdminClient } from "@/components/AdminClient";
+import type { TeamMember } from "@/lib/auth/teamMembers";
 
 export default async function AdminPage() {
   const supabase = await createClient();
@@ -43,12 +44,32 @@ export default async function AdminPage() {
     .select("*")
     .order("name", { ascending: true });
 
+  const { data: profiles } = await adminSupabase
+    .from("profiles")
+    .select("id, email, role, created_at")
+    .order("created_at", { ascending: false });
+
+  const initialMembers: TeamMember[] = ((profiles ?? []) as Array<{
+    id: string;
+    email: string | null;
+    role: string;
+    created_at: string;
+  }>).map((profile) => ({
+    id: profile.id,
+    email: profile.email ?? "",
+    role: profile.role === "admin" ? "admin" : "user",
+    created_at: profile.created_at,
+    last_sign_in_at: null,
+  }));
+
   return (
     <AdminClient
       accessLogs={accessLogs ?? []}
       initialThemes={themes ?? []}
       initialCategories={categories ?? []}
+      initialMembers={initialMembers}
       adminEmail={user.email ?? ""}
+      adminUserId={user.id}
     />
   );
 }

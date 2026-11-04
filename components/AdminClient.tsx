@@ -7,11 +7,8 @@ import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
 import {
-  UserPlus,
-  Shield,
   Globe,
   Clock,
-  Mail,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -24,7 +21,6 @@ import {
   Palette,
   IndianRupee,
   MapPin,
-  Users,
   FolderPlus,
   Tag,
   Eye,
@@ -42,8 +38,10 @@ import {
 import type { Database } from "@/lib/supabase/database.types";
 import { normalizeImageUrl, isGoogleDriveUrl } from "@/lib/imageUtils";
 import { errorText, fetchJson, signOutWithTimeout } from "@/lib/clientFetch";
-import { isUuid, passwordIssue, safeHttpsUrl } from "@/lib/security/urls";
+import { isUuid, safeHttpsUrl } from "@/lib/security/urls";
 import { AdminSidebar } from "@/components/AdminSidebar";
+import { TeamMembersPanel } from "@/components/TeamMembersPanel";
+import type { TeamMember } from "@/lib/auth/teamMembers";
 import { ThemeFormFields, FieldLabel, FieldInput } from "@/components/ThemeFormFields";
 import { searchThemes } from "@/lib/searchUtils";
 import { ThemePreviewModal } from "@/components/ThemePreviewModal";
@@ -56,14 +54,18 @@ interface AdminClientProps {
   accessLogs: AccessLog[];
   initialThemes: EventTheme[];
   initialCategories: ThemeCategory[];
+  initialMembers: TeamMember[];
   adminEmail: string;
+  adminUserId: string;
 }
 
 export function AdminClient({
   accessLogs,
   initialThemes,
   initialCategories,
+  initialMembers,
   adminEmail,
+  adminUserId,
 }: AdminClientProps) {
   const router = useRouter();
   const supabase = createClient();
@@ -76,6 +78,7 @@ export function AdminClient({
   /* ── Data state ── */
   const [themesList, setThemesList] = useState<EventTheme[]>(initialThemes);
   const [categoriesList, setCategoriesList] = useState<ThemeCategory[]>(initialCategories);
+  const [membersCount, setMembersCount] = useState(initialMembers.length);
 
   /* ── Table search/filter ── */
   const [tableSearch, setTableSearch] = useState("");
@@ -128,13 +131,6 @@ export function AdminClient({
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [categoryMessage, setCategoryMessage] = useState<{ success: boolean; text: string } | null>(null);
 
-  /* ── User management ── */
-  const [newEmail, setNewEmail] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState<"admin" | "user">("user");
-  const [createLoading, setCreateLoading] = useState(false);
-  const [createResult, setCreateResult] = useState<{ success: boolean; message: string } | null>(null);
-
   /* ── Delete states ── */
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deletingCatId, setDeletingCatId] = useState<string | null>(null);
@@ -145,7 +141,6 @@ export function AdminClient({
   const themeSubmitLock = useRef(false);
   const editSubmitLock = useRef(false);
   const categoryLock = useRef(false);
-  const userSubmitLock = useRef(false);
 
   /* ── Lock body scroll when mobile sidebar open ── */
   useEffect(() => {
@@ -382,35 +377,6 @@ export function AdminClient({
     }
   };
 
-  const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (userSubmitLock.current) return;
-    const issue = passwordIssue(newPassword);
-    if (issue) {
-      setCreateResult({ success: false, message: issue });
-      return;
-    }
-    userSubmitLock.current = true;
-    setCreateLoading(true);
-    setCreateResult(null);
-    try {
-      const { ok, data } = await fetchJson("/api/admin/create-user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: newEmail, password: newPassword, role: newRole }),
-      });
-      if (ok) {
-        setCreateResult({ success: true, message: `Member ${newEmail} created.` });
-        setNewEmail(""); setNewPassword(""); setNewRole("user");
-      } else {
-        setCreateResult({ success: false, message: errorText(data, "Failed to create user.") });
-      }
-    } finally {
-      userSubmitLock.current = false;
-      setCreateLoading(false);
-    }
-  };
-
   /* ─────────────────────────────────────────────
      RENDER
   ───────────────────────────────────────────── */
@@ -519,6 +485,7 @@ export function AdminClient({
             setActiveTab={setActiveTab}
             themesCount={themesList.length}
             categoriesCount={categoriesList.length}
+            membersCount={membersCount}
             onSignOutClick={() => setShowLogoutModal(true)}
           />
         </aside>
@@ -545,6 +512,7 @@ export function AdminClient({
                   setActiveTab={setActiveTab}
                   themesCount={themesList.length}
                   categoriesCount={categoriesList.length}
+                  membersCount={membersCount}
                   onSignOutClick={() => setShowLogoutModal(true)}
                   onNavClick={() => setMobileSidebarOpen(false)}
                 />
@@ -837,48 +805,8 @@ export function AdminClient({
 
               {/* ═══ TAB: USERS ═══ */}
               {activeTab === "users" && (
-                <motion.div key="users" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }} transition={{ type: "spring", stiffness: 300, damping: 28 }}
-                  className="grid md:grid-cols-2 gap-6 sm:gap-8"
-                >
-                  <div className="bg-white rounded-3xl shadow-card border border-dusty-pink/20 p-6 sm:p-8">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 bg-soft-gold/15 text-deep-ochre rounded-full text-xs font-bold uppercase tracking-wider mb-2"><UserPlus className="w-3.5 h-3.5" /> Team Access</div>
-                    <h2 className="text-xl sm:text-2xl font-bold text-royal-plum mb-1 font-bona-nova">Add Team Member</h2>
-                    <p className="text-forest-green/70 text-xs mb-6 font-medium">Create accounts via Supabase Admin API without disturbing your session.</p>
-                    <form onSubmit={handleCreateUser} className="space-y-4">
-                      <div>
-                        <FieldLabel>Email Address <span className="text-red-500">*</span></FieldLabel>
-                        <div className="relative"><Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-dusty-pink" /><FieldInput type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} required placeholder="member@kahanievents.in" className="pl-10" /></div>
-                      </div>
-                      <div>
-                        <FieldLabel>Temporary Password <span className="text-red-500">*</span></FieldLabel>
-                        <FieldInput type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required minLength={10} maxLength={72} placeholder="10–72 characters, with a letter and a number" autoComplete="new-password" />
-                      </div>
-                      <div>
-                        <FieldLabel>Role</FieldLabel>
-                        <select value={newRole} onChange={(e) => setNewRole(e.target.value as "admin" | "user")} className="w-full px-4 py-3 bg-cream/50 border border-dusty-pink/30 rounded-2xl text-royal-plum font-semibold focus:outline-none focus:ring-2 focus:ring-soft-gold/40 text-sm cursor-pointer">
-                          <option value="user">User — Showroom View Only</option>
-                          <option value="admin">Admin — Full Management Access</option>
-                        </select>
-                      </div>
-                      {createResult && (
-                        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
-                          className={`flex items-start gap-2.5 p-3.5 rounded-2xl border ${createResult.success ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"}`}
-                        >
-                          {createResult.success ? <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0 mt-0.5" /> : <XCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />}
-                          <p className={`text-sm font-bold ${createResult.success ? "text-green-700" : "text-red-700"}`}>{createResult.message}</p>
-                        </motion.div>
-                      )}
-                      <motion.button type="submit" disabled={createLoading} whileHover={{ scale: createLoading ? 1 : 1.015 }} whileTap={{ scale: createLoading ? 1 : 0.985 }}
-                        className="w-full py-3.5 bg-plum-gradient text-white font-bold rounded-2xl shadow-glow-plum hover:shadow-lg transition-all text-xs uppercase tracking-wider disabled:opacity-60 cursor-pointer flex items-center justify-center gap-2.5"
-                      >
-                        {createLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Creating...</> : <><UserPlus className="w-4 h-4" /> Create Member Account</>}
-                      </motion.button>
-                    </form>
-                  </div>
-                  <div className="bg-soft-gold/10 border border-soft-gold/30 rounded-3xl p-6 sm:p-8 h-fit">
-                    <h3 className="font-bold text-deep-ochre mb-2 flex items-center gap-2 font-bona-nova text-lg"><Shield className="w-5 h-5" /> Invitation-Only Security</h3>
-                    <p className="text-sm text-forest-green/80 leading-relaxed font-medium">Public sign-ups are disabled. Only team members invited through this panel or provisioned in Supabase can access the Kahani Events Vault showroom.</p>
-                  </div>
+                <motion.div key="users" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -16 }} transition={{ type: "spring", stiffness: 300, damping: 28 }}>
+                  <TeamMembersPanel adminUserId={adminUserId} initialMembers={initialMembers} onCountChange={setMembersCount} />
                 </motion.div>
               )}
 
