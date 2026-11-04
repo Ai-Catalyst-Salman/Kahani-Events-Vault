@@ -60,6 +60,16 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const { pathname } = request.nextUrl;
+  const isApiRoute = pathname.startsWith("/api");
+
+  // Pages that exist. Anything else falls through to the root 404.
+  // Add new pages here, or signed-out and signed-in visitors will both see not-found.
+  const isKnownPage =
+    pathname === "/" ||
+    pathname === "/login" ||
+    pathname.startsWith("/login/") ||
+    pathname === "/admin" ||
+    pathname.startsWith("/admin/");
 
   // Public routes that don't need auth
   const publicRoutes = ["/login", "/api/auth"];
@@ -68,13 +78,18 @@ export async function middleware(request: NextRequest) {
   );
 
   // Redirect unauthenticated API calls with a JSON 401. Page routes go to login.
-  if (!user && pathname.startsWith("/api")) {
+  if (!user && isApiRoute) {
     const unauthorized = NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     unauthorized.headers.set("Cache-Control", "no-store");
     supabaseResponse.cookies.getAll().forEach((cookie) => {
       unauthorized.cookies.set(cookie);
     });
     return unauthorized;
+  }
+
+  // Unknown addresses render the vault 404, including for signed-out visitors.
+  if (!isApiRoute && !isKnownPage) {
+    return supabaseResponse;
   }
 
   // Redirect unauthenticated users to login
@@ -93,7 +108,7 @@ export async function middleware(request: NextRequest) {
   }
 
   // Fire-and-forget access log — never blocks the request
-  if (user && !isPublicRoute && !pathname.startsWith("/api") && shouldLogPageView(user.id)) {
+  if (user && isKnownPage && !isPublicRoute && shouldLogPageView(user.id)) {
     const city = (request.headers.get("x-vercel-ip-city") || "").slice(0, 80);
     const country = (request.headers.get("x-vercel-ip-country") || "").slice(0, 8);
     const location = [city, country].filter(Boolean).join(", ").slice(0, 120) || "Unknown";

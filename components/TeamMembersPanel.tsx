@@ -166,7 +166,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
       } else {
         setNotice({
           success: true,
-          message: role === "admin" ? `${member.email} now has full admin access.` : `${member.email} is limited to the showroom.`,
+          message: role === "admin" ? `${member.email} now has full admin access.` : `${member.email} now has user access.`,
         });
       }
     } finally {
@@ -268,7 +268,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
             <div>
               <FieldLabel>Role</FieldLabel>
               <select value={newRole} onChange={(e) => setNewRole(e.target.value as "admin" | "user")} className="w-full px-4 py-3 bg-cream/50 border border-dusty-pink/30 rounded-2xl text-royal-plum font-semibold focus:outline-none focus:ring-2 focus:ring-soft-gold/40 text-sm cursor-pointer">
-                <option value="user">User — Showroom View Only</option>
+                <option value="user">User — View Only</option>
                 <option value="admin">Admin — Full Management Access</option>
               </select>
             </div>
@@ -286,14 +286,14 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
               <Shield className="w-5 h-5" /> Invitation-Only Security
             </h3>
             <p className="text-sm text-forest-green/80 leading-relaxed font-medium">
-              Public sign-ups are disabled. From this panel you can invite someone, reset their password, switch them between admin and showroom access, or remove them.
+              Public sign-ups are disabled. From this panel you can invite someone, reset their password, switch them between admin and user access, or remove them.
             </p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             {[
               { label: "Members", value: members.length, icon: Users },
               { label: "Admins", value: adminCount, icon: Crown },
-              { label: "Showroom", value: userCount, icon: Shield },
+              { label: "Users", value: userCount, icon: Shield },
             ].map(({ label, value, icon: Icon }) => (
               <div key={label} className="bg-white rounded-2xl border border-dusty-pink/20 px-3 py-4 text-center shadow-card">
                 <Icon className="w-4 h-4 text-soft-gold mx-auto mb-1.5" />
@@ -341,7 +341,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
           {([
             ["all", "All"],
             ["admin", "Admins"],
-            ["user", "Showroom"],
+            ["user", "Users"],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -400,7 +400,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
                                 key={role}
                                 type="button"
                                 disabled={disabled}
-                                title={isSelf ? "Your own access stays admin" : lastAdmin && role === "user" ? "At least one administrator must remain" : role === "admin" ? "Full management access" : "Showroom view only"}
+                                title={isSelf ? "Your own access stays admin" : lastAdmin && role === "user" ? "At least one administrator must remain" : role === "admin" ? "Full management access" : "User view only"}
                                 onClick={() => void handleRole(member, role)}
                                 className={`px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wide transition-colors ${
                                   active ? "bg-plum-gradient text-white" : "text-royal-plum/70 hover:text-royal-plum"
@@ -526,7 +526,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
                   </div>
                   <h2 id="delete-member-title" className="text-royal-plum font-bold text-base font-bona-nova">Remove this member?</h2>
                   <p className="text-sm text-forest-green/80 font-medium mt-2 leading-relaxed">
-                    <span className="font-bold text-royal-plum">{deleteTarget.email}</span> will lose access to the showroom immediately. This cannot be undone.
+                    <span className="font-bold text-royal-plum">{deleteTarget.email}</span> will lose access immediately. This cannot be undone.
                   </p>
                 </div>
                 <div className="px-6 py-5 flex gap-3">
