@@ -692,7 +692,6 @@ export function PresentationUploader({
                 <iframe
                   src={embedSrc}
                   className="w-full h-full border-none bg-white block absolute inset-0"
-                  sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-downloads allow-presentation"
                   referrerPolicy="no-referrer"
                   allowFullScreen
                   title="Presentation Preview"

@@ -14,9 +14,22 @@ const frameSrc = [
   "https://drive.google.com",
   "https://docs.google.com",
   "https://view.officeapps.live.com",
+  "https://*.officeapps.live.com",
   "https://*.r2.dev",
+  "https://*.cloudflarestorage.com",
   "https://*.googleusercontent.com",
   assetHostName ? `https://${assetHostName}` : "",
+]
+  .filter(Boolean)
+  .join(" ");
+
+const objectSrc = [
+  "'self'",
+  "https://*.r2.dev",
+  "https://*.cloudflarestorage.com",
+  assetHostName ? `https://${assetHostName}` : "",
+  "blob:",
+  "data:",
 ]
   .filter(Boolean)
   .join(" ");
@@ -37,7 +50,7 @@ const securityHeaders = [
       "font-src 'self' data:",
       "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://*.r2.cloudflarestorage.com https://*.r2.dev",
       `frame-src ${frameSrc}`,
-      "object-src 'none'",
+      `object-src ${objectSrc}`,
       "base-uri 'self'",
       "form-action 'self'",
       "frame-ancestors 'self'",

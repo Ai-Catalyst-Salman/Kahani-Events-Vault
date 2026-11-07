@@ -144,6 +144,13 @@ export function safePresentationEmbed(raw: unknown): string | null {
     return `https://drive.google.com/file/d/${drive[1]}/preview`;
   }
 
+  const gslides = trimmed.match(
+    /docs\.google\.com\/presentation\/d\/([a-zA-Z0-9_-]{25,})/
+  );
+  if (gslides?.[1]) {
+    return `https://docs.google.com/presentation/d/${gslides[1]}/embed`;
+  }
+
   const https = safeHttpsUrl(trimmed);
   if (!https) return null;
 
