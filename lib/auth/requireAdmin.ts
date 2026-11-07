@@ -1,6 +1,6 @@
 import { apiError } from "@/lib/api/respond";
+import { readVerifiedUser } from "@/lib/auth/requestUser";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { createClient as createServerClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
 export function rejectAuth(auth: { ok: boolean; error?: string; status?: number }): NextResponse | null {
@@ -22,11 +22,7 @@ type AdminFailure = {
 };
 
 export async function requireAdmin(): Promise<AdminContext | AdminFailure> {
-  const supabase = await createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+  const user = await readVerifiedUser();
   if (!user) return { ok: false, status: 401, error: "Unauthorized" };
 
   const adminSupabase = createAdminClient();
@@ -43,11 +39,7 @@ export async function requireAdmin(): Promise<AdminContext | AdminFailure> {
 }
 
 export async function requireUserId(): Promise<{ ok: true; userId: string } | AdminFailure> {
-  const supabase = await createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
+  const user = await readVerifiedUser();
   if (!user) return { ok: false, status: 401, error: "Unauthorized" };
   return { ok: true, userId: user.id };
 }

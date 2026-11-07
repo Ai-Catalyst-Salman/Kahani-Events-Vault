@@ -22,13 +22,6 @@ export async function PATCH(request: Request) {
     if (!parsed.ok) return apiError(fieldError(parsed), 400);
     if (!parsed.id) return apiError("A valid theme id is required.", 400);
 
-    const { data: existing } = await auth.adminSupabase
-      .from("event_themes")
-      .select("id")
-      .eq("id", parsed.id)
-      .maybeSingle();
-    if (!existing) return apiError("Theme not found.", 404);
-
     const categoryId = await resolveThemeCategory(auth.adminSupabase, parsed.value.category);
     if (!categoryId) return apiError("Category is not recognized.", 400);
 
@@ -56,10 +49,11 @@ export async function PATCH(request: Request) {
       .select()
       .maybeSingle();
 
-    if (error || !theme) {
-      console.error("[api/admin/update-theme]", error?.code || "update_failed");
+    if (error) {
+      console.error("[api/admin/update-theme]", error.code);
       return apiError("Could not update the theme.", 500);
     }
+    if (!theme) return apiError("Theme not found.", 404);
 
     return apiJson({ success: true, theme });
   } catch (err) {

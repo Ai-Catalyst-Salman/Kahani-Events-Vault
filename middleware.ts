@@ -1,5 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { USER_EMAIL_HEADER, USER_ID_HEADER } from "@/lib/auth/userHeaders";
+import { readCachedUser, rememberUser } from "@/lib/auth/verifiedUserCache";
+import { isUuid } from "@/lib/security/urls";
 
 const pageViewAt = new Map<string, number>();
 
@@ -28,8 +31,12 @@ function shouldLogPageView(userId: string): boolean {
 }
 
 export async function middleware(request: NextRequest) {
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.delete(USER_ID_HEADER);
+  requestHeaders.delete(USER_EMAIL_HEADER);
+
   let supabaseResponse = NextResponse.next({
-    request,
+    request: { headers: requestHeaders },
   });
 
   const supabase = createServerClient(
@@ -45,7 +52,7 @@ export async function middleware(request: NextRequest) {
             request.cookies.set(name, value)
           );
           supabaseResponse = NextResponse.next({
-            request,
+            request: { headers: requestHeaders },
           });
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
@@ -55,9 +62,31 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const accessToken = sessionData.session?.access_token;
+  let user: { id: string; email: string } | null = null;
+  if (accessToken) {
+    user = readCachedUser(accessToken);
+    if (!user) {
+      const { data } = await supabase.auth.getClaims(accessToken);
+      const subject = data?.claims?.sub;
+      if (isUuid(subject)) {
+        const email = typeof data?.claims?.email === "string" ? data.claims.email : "";
+        user = { id: subject, email };
+        rememberUser(accessToken, user);
+      }
+    }
+  }
+
+  if (user) {
+    requestHeaders.set(USER_ID_HEADER, user.id);
+    requestHeaders.set(USER_EMAIL_HEADER, user.email);
+    const forwarded = NextResponse.next({ request: { headers: requestHeaders } });
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      forwarded.cookies.set(cookie);
+    });
+    supabaseResponse = forwarded;
+  }
 
   const { pathname } = request.nextUrl;
   const isApiRoute = pathname.startsWith("/api");

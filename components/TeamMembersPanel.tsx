@@ -39,7 +39,7 @@ function formatWhen(value: string | null) {
 
 export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }: TeamMembersPanelProps) {
   const [members, setMembers] = useState<TeamMember[]>(initialMembers);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [synced, setSynced] = useState(false);
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<"all" | "admin" | "user">("all");
@@ -59,7 +59,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const [deleteTarget, setDeleteTarget] = useState<TeamMember | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteLoading] = useState(false);
 
   const createLock = useRef(false);
 
@@ -68,8 +68,8 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
     onCountChange(next.length);
   };
 
-  const loadMembers = async () => {
-    setLoading(true);
+  const loadMembers = async (background = false) => {
+    if (!background) setLoading(true);
     try {
       const { ok, data } = await fetchJson("/api/admin/users");
       if (!ok || !Array.isArray(data.users)) {
@@ -90,7 +90,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
 
   useEffect(() => {
     onCountChange(initialMembers.length);
-    void loadMembers();
+    void loadMembers(true);
     // Initial directory comes from the server; refresh once for sign-in times.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -124,12 +124,22 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: newEmail, password: newPassword, role: newRole }),
       });
-      if (ok) {
-        setNotice({ success: true, message: `${newEmail.trim().toLowerCase()} can sign in now.` });
+      const created = data.user as { id?: string; email?: string; role?: string } | undefined;
+      if (ok && created?.id && created.email && (created.role === "admin" || created.role === "user")) {
+        setNotice({ success: true, message: `${created.email} can sign in now.` });
         setNewEmail("");
         setNewPassword("");
         setNewRole("user");
-        await loadMembers();
+        applyMembers([
+          {
+            id: created.id,
+            email: created.email,
+            role: created.role,
+            created_at: new Date().toISOString(),
+            last_sign_in_at: null,
+          },
+          ...members.filter((member) => member.id !== created.id),
+        ]);
       } else {
         setNotice({ success: false, message: errorText(data, "Failed to create the member.") });
       }
@@ -221,25 +231,23 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
 
   const handleDelete = async () => {
     if (!deleteTarget || deleteLoading) return;
-    setDeleteLoading(true);
+    const target = deleteTarget;
+    const previous = members;
+    applyMembers(members.filter((row) => row.id !== target.id));
+    setDeleteTarget(null);
     setNotice(null);
-    try {
-      const { ok, data } = await fetchJson("/api/admin/users/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: deleteTarget.id }),
-      });
-      if (!ok) {
-        setNotice({ success: false, message: errorText(data, "Could not remove this member.") });
-        return;
-      }
-      const email = deleteTarget.email;
-      applyMembers(members.filter((row) => row.id !== deleteTarget.id));
-      setDeleteTarget(null);
-      setNotice({ success: true, message: `${email} no longer has access.` });
-    } finally {
-      setDeleteLoading(false);
+    const { ok, data } = await fetchJson("/api/admin/users/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: target.id }),
+    });
+    if (!ok) {
+      applyMembers(previous);
+      setDeleteTarget(target);
+      setNotice({ success: false, message: errorText(data, "Could not remove this member.") });
+      return;
     }
+    setNotice({ success: true, message: `${target.email} no longer has access.` });
   };
 
   return (
@@ -528,6 +536,11 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
                   <p className="text-sm text-forest-green/80 font-medium mt-2 leading-relaxed">
                     <span className="font-bold text-royal-plum">{deleteTarget.email}</span> will lose access immediately. This cannot be undone.
                   </p>
+                  {notice && !notice.success && (
+                    <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs font-semibold">
+                      {notice.message}
+                    </div>
+                  )}
                 </div>
                 <div className="px-6 py-5 flex gap-3">
                   <button type="button" onClick={() => setDeleteTarget(null)} disabled={deleteLoading} className="flex-1 py-3 rounded-2xl border border-dusty-pink/30 text-royal-plum text-sm font-bold hover:bg-cream-dark transition-colors cursor-pointer disabled:opacity-50">Keep</button>

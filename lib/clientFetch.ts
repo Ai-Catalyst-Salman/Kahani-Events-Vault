@@ -34,20 +34,16 @@ export function errorText(data: Record<string, unknown>, fallback: string): stri
 
 export async function signOutWithTimeout(
   supabase: {
-    auth: { signOut: () => Promise<unknown> };
+    auth: { signOut: (options?: { scope?: "local" | "global" | "others" }) => Promise<unknown> };
     rpc: (fn: string, args: Record<string, unknown>) => PromiseLike<unknown>;
   },
-  timeoutMs = 8000
+  timeoutMs = 1000
 ) {
+  void Promise.resolve(supabase.rpc("log_auth_event", { p_event_type: "LOGOUT" })).catch(() => {
+    // Audit logging must not block sign-out.
+  });
   await Promise.race([
-    (async () => {
-      try {
-        await supabase.rpc("log_auth_event", { p_event_type: "LOGOUT" });
-      } catch {
-        // Audit logging must not block sign-out.
-      }
-      await supabase.auth.signOut();
-    })(),
+    supabase.auth.signOut({ scope: "local" }),
     new Promise((resolve) => setTimeout(resolve, timeoutMs)),
   ]);
 }

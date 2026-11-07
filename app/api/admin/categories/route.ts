@@ -79,21 +79,20 @@ export async function DELETE(request: Request) {
     const body = await readJson(request, 8_192);
     if (body === "too_large") return apiError("Payload too large.", 413);
     if (body === "invalid") return apiError("Invalid request.", 400);
-    const id = body && typeof body === "object" ? (body as { id?: unknown }).id : null;
+    const rawId = body && typeof body === "object" ? (body as { id?: unknown }).id : null;
+    const id = typeof rawId === "string" ? rawId.trim() : rawId;
     if (!isUuid(id)) return apiError("A valid category id is required.", 400);
 
-    const { data: existing } = await auth.adminSupabase
+    const { data: removed, error } = await auth.adminSupabase
       .from("theme_categories")
-      .select("id")
+      .delete()
       .eq("id", id)
-      .maybeSingle();
-    if (!existing) return apiError("Category not found.", 404);
-
-    const { error } = await auth.adminSupabase.from("theme_categories").delete().eq("id", id);
+      .select("id");
     if (error) {
       console.error("[api/admin/categories DELETE]", error.code);
       return apiError("Could not delete the category.", 500);
     }
+    if (!removed || removed.length === 0) return apiError("Category not found.", 404);
 
     return apiJson({ success: true });
   } catch (err) {

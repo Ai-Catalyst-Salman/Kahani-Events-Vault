@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { LogoutConfirmModal } from "@/components/LogoutConfirmModal";
+import { DeleteConfirmModal } from "@/components/DeleteConfirmModal";
 import {
   Globe,
   Clock,
@@ -119,7 +120,7 @@ export function AdminClient({
   const [editMaterialDownloadLink, setEditMaterialDownloadLink] = useState("");
   const [editThumbnailUrl, setEditThumbnailUrl] = useState("");
   const [editAdditionalNotes, setEditAdditionalNotes] = useState("");
-  const [editLoading, setEditLoading] = useState(false);
+  const [editLoading] = useState(false);
   const [editResult, setEditResult] = useState<{ success: boolean; message: string } | null>(null);
 
   /* ── Inline category add ── */
@@ -131,9 +132,14 @@ export function AdminClient({
   const [categoryLoading, setCategoryLoading] = useState(false);
   const [categoryMessage, setCategoryMessage] = useState<{ success: boolean; text: string } | null>(null);
 
-  /* ── Delete states ── */
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [deletingCatId, setDeletingCatId] = useState<string | null>(null);
+  /* ── Delete states & inside confirmation modals ── */
+  const [deleteThemeTarget, setDeleteThemeTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteThemeLoading] = useState(false);
+  const [deleteThemeError, setDeleteThemeError] = useState<string | null>(null);
+
+  const [deleteCategoryTarget, setDeleteCategoryTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteCategoryLoading] = useState(false);
+  const [deleteCategoryError, setDeleteCategoryError] = useState<string | null>(null);
 
   /* ── Logout modal ── */
   const [showLogoutModal, setShowLogoutModal] = useState(false);
@@ -211,7 +217,7 @@ export function AdminClient({
         }
       } else {
         const message = errorText(data, "Failed to add category.");
-        if (isInline) alert(message);
+        if (isInline) setThemeResult({ success: false, message });
         else setCategoryMessage({ success: false, text: message });
       }
     } finally {
@@ -220,19 +226,22 @@ export function AdminClient({
     }
   };
 
-  const handleDeleteCategory = async (id: string, name: string) => {
-    if (!confirm(`Remove category "${name}"?`)) return;
-    setDeletingCatId(id);
-    try {
-      const { ok } = await fetchJson("/api/admin/categories", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      });
-      if (ok) setCategoriesList(categoriesList.filter((c) => c.id !== id));
-      else alert("Failed to delete category.");
-    } finally {
-      setDeletingCatId(null);
+  const handleConfirmDeleteCategory = async () => {
+    if (!deleteCategoryTarget || deleteCategoryLoading) return;
+    const target = deleteCategoryTarget;
+    const previous = categoriesList;
+    setCategoriesList((prev) => prev.filter((c) => c.id !== target.id));
+    setDeleteCategoryTarget(null);
+    setDeleteCategoryError(null);
+    const { ok, data } = await fetchJson("/api/admin/categories", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: target.id }),
+    });
+    if (!ok) {
+      setCategoriesList(previous);
+      setDeleteCategoryTarget(target);
+      setDeleteCategoryError(errorText(data, "Failed to delete category. Please try again."));
     }
   };
 
@@ -329,15 +338,36 @@ export function AdminClient({
     }
 
     editSubmitLock.current = true;
-    setEditLoading(true);
     setEditResult(null);
+    const current = editingTheme;
+    const previous = themesList;
+    const matchedCat = categoriesList.find((c) => c.name === editCategory);
+    const optimistic: EventTheme = {
+      ...current,
+      theme_name: editName,
+      title: editName,
+      category: editCategory,
+      category_id: matchedCat?.id || null,
+      keywords: editKeywords,
+      theme_link: editThemeLink,
+      executed_ppts_link: editExecutedPptsLink,
+      client_persona: editClientPersona,
+      color_palette: editColors,
+      total_event_value: editTotalEventValue,
+      ideal_venue: editIdealVenue,
+      launch_status: editLaunchStatus || null,
+      material_download_link: editMaterialDownloadLink,
+      thumbnail_url: normalizeImageUrl(editThumbnailUrl) || null,
+      additional_notes: editAdditionalNotes,
+    };
+    setThemesList(previous.map((theme) => (theme.id === current.id ? optimistic : theme)));
+    setEditingTheme(null);
     try {
-      const matchedCat = categoriesList.find((c) => c.name === editCategory);
       const { ok, data } = await fetchJson("/api/admin/update-theme", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: editingTheme.id,
+          id: current.id,
           theme_name: editName, category: editCategory, category_id: matchedCat?.id || null,
           keywords: editKeywords, theme_link: editThemeLink,
           executed_ppts_link: editExecutedPptsLink, client_persona: editClientPersona,
@@ -349,31 +379,34 @@ export function AdminClient({
       });
       const theme = data.theme as EventTheme | undefined;
       if (ok && theme) {
-        setThemesList(themesList.map((t) => (t.id === theme.id ? theme : t)));
-        setEditResult({ success: true, message: `"${editName}" updated successfully!` });
-        setTimeout(() => setEditingTheme(null), 1200);
+        setThemesList((list) => list.map((item) => (item.id === theme.id ? theme : item)));
       } else {
+        setThemesList(previous);
+        openEdit(current);
         setEditResult({ success: false, message: errorText(data, "Failed to update theme.") });
       }
     } finally {
       editSubmitLock.current = false;
-      setEditLoading(false);
     }
   };
 
-  const handleDeleteTheme = async (id: string, name: string) => {
-    if (!confirm(`Remove "${name}" from the Vault?`)) return;
-    setDeletingId(id);
-    try {
-      const { ok } = await fetchJson("/api/admin/delete-theme", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id }),
-      });
-      if (ok) setThemesList(themesList.filter((t) => t.id !== id));
-      else alert("Failed to delete theme.");
-    } finally {
-      setDeletingId(null);
+  const handleConfirmDeleteTheme = async () => {
+    if (!deleteThemeTarget || deleteThemeLoading) return;
+    const target = deleteThemeTarget;
+    const previous = themesList;
+    setThemesList((prev) => prev.filter((theme) => theme.id !== target.id));
+    if (editingTheme?.id === target.id) setEditingTheme(null);
+    setDeleteThemeTarget(null);
+    setDeleteThemeError(null);
+    const { ok, data } = await fetchJson("/api/admin/delete-theme", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: target.id }),
+    });
+    if (!ok) {
+      setThemesList(previous);
+      setDeleteThemeTarget(target);
+      setDeleteThemeError(errorText(data, "Failed to delete theme. Please try again."));
     }
   };
 
@@ -383,6 +416,42 @@ export function AdminClient({
   return (
     <>
       <LogoutConfirmModal open={showLogoutModal} loading={logoutLoading} email={adminEmail} onConfirm={handleLogoutConfirm} onCancel={() => setShowLogoutModal(false)} />
+
+      {/* Delete Theme Inside Confirmation Modal */}
+      <DeleteConfirmModal
+        open={Boolean(deleteThemeTarget)}
+        title="Delete Theme?"
+        itemName={deleteThemeTarget?.name}
+        description="This theme will be permanently removed from the Vault showroom. This action cannot be undone."
+        confirmText="Delete Theme"
+        loading={deleteThemeLoading}
+        error={deleteThemeError}
+        onConfirm={handleConfirmDeleteTheme}
+        onCancel={() => {
+          if (!deleteThemeLoading) {
+            setDeleteThemeTarget(null);
+            setDeleteThemeError(null);
+          }
+        }}
+      />
+
+      {/* Delete Category Inside Confirmation Modal */}
+      <DeleteConfirmModal
+        open={Boolean(deleteCategoryTarget)}
+        title="Delete Category?"
+        itemName={deleteCategoryTarget?.name}
+        description="Removing this category will unassign it from any linked themes. This action cannot be undone."
+        confirmText="Delete Category"
+        loading={deleteCategoryLoading}
+        error={deleteCategoryError}
+        onConfirm={handleConfirmDeleteCategory}
+        onCancel={() => {
+          if (!deleteCategoryLoading) {
+            setDeleteCategoryTarget(null);
+            setDeleteCategoryError(null);
+          }
+        }}
+      />
 
       {/* ════ EDIT THEME SLIDE-IN PANEL ════ */}
       <AnimatePresence>
@@ -453,21 +522,37 @@ export function AdminClient({
               </form>
 
               {/* Panel footer */}
-              <div className="px-6 py-4 border-t border-dusty-pink/15 bg-cream/50 shrink-0 flex gap-3">
-                <button type="button" onClick={() => setEditingTheme(null)} className="flex-1 py-3 rounded-2xl border border-dusty-pink/30 text-royal-plum text-sm font-bold hover:bg-cream-dark transition-colors">
-                  Cancel
-                </button>
-                <motion.button
-                  type="submit"
-                  form="edit-form"
-                  onClick={handleUpdateTheme}
-                  disabled={editLoading}
-                  whileHover={{ scale: editLoading ? 1 : 1.015 }}
-                  whileTap={{ scale: editLoading ? 1 : 0.985 }}
-                  className="flex-1 py-3 bg-plum-gradient text-white font-bold rounded-2xl shadow-glow-plum transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-60 cursor-pointer"
+              <div className="px-6 py-4 border-t border-dusty-pink/15 bg-cream/50 shrink-0 flex items-center justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const themeName = editName.trim() || editingTheme.theme_name || editingTheme.title || "Untitled";
+                    setDeleteThemeError(null);
+                    setDeleteThemeTarget({ id: editingTheme.id, name: themeName });
+                  }}
+                  disabled={editLoading || deleteThemeLoading}
+                  className="px-4 py-3 rounded-2xl border border-red-200 text-red-600 hover:bg-red-50 text-sm font-bold flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                  title="Delete Theme"
                 >
-                  {editLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : <><Save className="w-4 h-4" /> Save Changes</>}
-                </motion.button>
+                  <Trash2 className="w-4 h-4" />
+                  <span className="hidden sm:inline">Delete Theme</span>
+                </button>
+                <div className="flex items-center gap-3">
+                  <button type="button" onClick={() => setEditingTheme(null)} className="py-3 px-5 rounded-2xl border border-dusty-pink/30 text-royal-plum text-sm font-bold hover:bg-cream-dark transition-colors cursor-pointer">
+                    Cancel
+                  </button>
+                  <motion.button
+                    type="submit"
+                    form="edit-form"
+                    onClick={handleUpdateTheme}
+                    disabled={editLoading}
+                    whileHover={{ scale: editLoading ? 1 : 1.015 }}
+                    whileTap={{ scale: editLoading ? 1 : 0.985 }}
+                    className="py-3 px-6 bg-plum-gradient text-white font-bold rounded-2xl shadow-glow-plum transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-60 cursor-pointer"
+                  >
+                    {editLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving...</> : <><Save className="w-4 h-4" /> Save Changes</>}
+                  </motion.button>
+                </div>
               </div>
             </motion.div>
           </>
@@ -745,8 +830,20 @@ export function AdminClient({
                                     )}
 
                                     {/* Delete */}
-                                    <button onClick={() => handleDeleteTheme(theme.id, name)} disabled={deletingId === theme.id} title="Delete" className="p-2 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50">
-                                      {deletingId === theme.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                                    <button
+                                      onClick={() => {
+                                        setDeleteThemeError(null);
+                                        setDeleteThemeTarget({ id: theme.id, name });
+                                      }}
+                                      disabled={deleteThemeLoading && deleteThemeTarget?.id === theme.id}
+                                      title="Delete Theme"
+                                      className="p-2 rounded-xl border border-red-200 text-red-600 hover:bg-red-50 transition-colors cursor-pointer disabled:opacity-50"
+                                    >
+                                      {deleteThemeLoading && deleteThemeTarget?.id === theme.id ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      )}
                                     </button>
                                   </div>
                                 </td>
@@ -792,8 +889,20 @@ export function AdminClient({
                         <div key={cat.id} className="flex items-center justify-between p-4 bg-cream/40 rounded-2xl border border-dusty-pink/15 hover:border-soft-gold/40 transition-colors">
                           <div className="flex items-center gap-3"><Tag className="w-4 h-4 text-soft-gold" /><span className="text-sm font-bold text-royal-plum font-bona-nova">{cat.name}</span></div>
                           {isUuid(cat.id) && (
-                            <button onClick={() => handleDeleteCategory(cat.id, cat.name)} disabled={deletingCatId === cat.id} title="Delete" className="p-1.5 text-dusty-pink hover:text-red-600 transition-colors cursor-pointer disabled:opacity-50">
-                              {deletingCatId === cat.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                            <button
+                              onClick={() => {
+                                setDeleteCategoryError(null);
+                                setDeleteCategoryTarget({ id: cat.id, name: cat.name });
+                              }}
+                              disabled={deleteCategoryLoading && deleteCategoryTarget?.id === cat.id}
+                              title="Delete Category"
+                              className="p-1.5 text-dusty-pink hover:text-red-600 transition-colors cursor-pointer disabled:opacity-50"
+                            >
+                              {deleteCategoryLoading && deleteCategoryTarget?.id === cat.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3.5 h-3.5" />
+                              )}
                             </button>
                           )}
                         </div>
