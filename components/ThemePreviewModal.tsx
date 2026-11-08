@@ -272,7 +272,13 @@ export function ThemePreviewModal({
                         {theme.category}
                       </span>
                       {theme.launch_status && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-700 text-white text-[9px] sm:text-[10px] font-bold uppercase tracking-wider">
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-white text-[9px] sm:text-[10px] font-bold uppercase tracking-wider ${
+                            theme.launch_status.toLowerCase() === "bestseller"
+                              ? "bg-purple-700"
+                              : "bg-emerald-600"
+                          }`}
+                        >
                           <Sparkles className="w-2 h-2" />
                           {theme.launch_status}
                         </span>

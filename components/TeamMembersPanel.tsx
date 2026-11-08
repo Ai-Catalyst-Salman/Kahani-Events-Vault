@@ -326,7 +326,7 @@ export function TeamMembersPanel({ adminUserId, initialMembers, onCountChange }:
         <div className="p-4 sm:p-6 border-b border-dusty-pink/15 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
             <h2 className="text-xl sm:text-2xl font-bold text-royal-plum font-bona-nova">Team Directory ({visible.length})</h2>
-            <p className="text-forest-green/70 text-xs mt-0.5 font-medium">Every account that can open the Kahani Events Vault.</p>
+            <p className="text-forest-green/70 text-xs mt-0.5 font-medium">Every account that can open Kahani Ke Kisse.</p>
           </div>
           <div className="flex items-center gap-2">
             <div className="relative flex-1 lg:flex-none">

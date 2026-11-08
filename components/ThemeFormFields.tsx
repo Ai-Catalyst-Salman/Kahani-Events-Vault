@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Tag,
   PlusCircle,
@@ -9,6 +9,10 @@ import {
   ExternalLink,
   IndianRupee,
   Check,
+  MapPin,
+  ChevronDown,
+  X,
+  Trash2,
 } from "lucide-react";
 import { PresentationUploader } from "@/components/PresentationUploader";
 import { ThumbnailUploader } from "@/components/ThumbnailUploader";
@@ -40,6 +44,8 @@ export const COLOR_DOTS: Record<string, string> = {
   "dark brown": "bg-amber-900",
   cream: "bg-amber-100 border border-amber-300",
 };
+
+export const DEFAULT_VENUES = ["Udaipur", "Surat", "Vapi"];
 
 export function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -121,6 +127,88 @@ export function ThemeFormFields({
   categoryLoading = false,
   isEdit = false,
 }: ThemeFormFieldsProps) {
+
+  const [venueOptions, setVenueOptions] = useState<string[]>(() => {
+    if (typeof window === "undefined") return DEFAULT_VENUES;
+    try {
+      const saved = localStorage.getItem("kv_venues_list") || localStorage.getItem("kv_custom_venues");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return DEFAULT_VENUES;
+  });
+
+  const [showNewVenueInput, setShowNewVenueInput] = useState(false);
+  const [newVenueName, setNewVenueName] = useState("");
+  const [venueDropdownOpen, setVenueDropdownOpen] = useState(false);
+  const venueDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (venueDropdownRef.current && !venueDropdownRef.current.contains(e.target as Node)) {
+        setVenueDropdownOpen(false);
+      }
+    };
+    if (venueDropdownOpen) {
+      document.addEventListener("mousedown", handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [venueDropdownOpen]);
+
+  useEffect(() => {
+    if (!venue) return;
+    const currentList = venue.split(",").map((s) => s.trim()).filter(Boolean);
+    if (currentList.length > 0) {
+      setVenueOptions((prev) => Array.from(new Set([...prev, ...currentList])));
+    }
+  }, [venue]);
+
+  const selectedVenues = venue
+    ? venue.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  const handleToggleVenueCity = (city: string) => {
+    let next: string[];
+    if (selectedVenues.includes(city)) {
+      next = selectedVenues.filter((c) => c !== city);
+    } else {
+      next = [...selectedVenues, city];
+    }
+    setVenue(next.join(", "));
+  };
+
+  const handleAddCustomVenue = () => {
+    const trimmed = newVenueName.trim();
+    if (!trimmed) return;
+    const updated = Array.from(new Set([...venueOptions, trimmed]));
+    setVenueOptions(updated);
+    try {
+      localStorage.setItem("kv_venues_list", JSON.stringify(updated));
+    } catch {}
+    if (!selectedVenues.includes(trimmed)) {
+      setVenue([...selectedVenues, trimmed].join(", "));
+    }
+    setNewVenueName("");
+    setShowNewVenueInput(false);
+  };
+
+  const handleDeleteVenueOption = (cityToDelete: string) => {
+    const updated = venueOptions.filter((c) => c !== cityToDelete);
+    setVenueOptions(updated);
+    try {
+      localStorage.setItem("kv_venues_list", JSON.stringify(updated));
+    } catch {}
+    if (selectedVenues.includes(cityToDelete)) {
+      const next = selectedVenues.filter((c) => c !== cityToDelete);
+      setVenue(next.join(", "));
+    }
+  };
 
   const toggleColor = (color: string) => {
     setColors(colors.includes(color) ? colors.filter((c) => c !== color) : [...colors, color]);
@@ -373,14 +461,166 @@ export function ThemeFormFields({
               maxLength={80}
             />
           </div>
-          <div>
-            <FieldLabel>Ideal Venue</FieldLabel>
-            <FieldInput
-              value={venue}
-              onChange={(e) => setVenue(e.target.value)}
-              placeholder="e.g. Surat, Vapi, Udaipur"
-              maxLength={160}
-            />
+          <div className="relative" ref={venueDropdownRef}>
+            <div className="flex items-center justify-between mb-1.5">
+              <FieldLabel>Ideal Venue</FieldLabel>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNewVenueInput((prev) => !prev);
+                  setVenueDropdownOpen(true);
+                }}
+                className="text-[11px] font-bold text-deep-ochre hover:text-royal-plum flex items-center gap-1 cursor-pointer"
+              >
+                <PlusCircle className="w-3.5 h-3.5" />
+                {showNewVenueInput ? "Cancel" : "+ New City"}
+              </button>
+            </div>
+
+            {/* Inline Add New City Input */}
+            {showNewVenueInput && (
+              <div className="flex gap-2 mb-2 p-2 bg-cream rounded-xl border border-soft-gold/50 shadow-xs">
+                <input
+                  type="text"
+                  value={newVenueName}
+                  onChange={(e) => setNewVenueName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddCustomVenue();
+                    }
+                  }}
+                  placeholder="Enter new city (e.g. Goa, Jaipur)"
+                  maxLength={60}
+                  className="flex-1 px-3 py-1.5 bg-white border border-dusty-pink/30 rounded-lg text-royal-plum text-xs font-medium focus:outline-none focus:border-royal-plum"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={handleAddCustomVenue}
+                  className="px-3 py-1.5 bg-royal-plum text-white text-xs font-bold rounded-lg hover:bg-royal-plum/90 cursor-pointer shadow-xs whitespace-nowrap"
+                >
+                  Add
+                </button>
+              </div>
+            )}
+
+            {/* Dropdown Selection Button */}
+            <button
+              type="button"
+              onClick={() => setVenueDropdownOpen((prev) => !prev)}
+              className="w-full min-h-[44px] px-3.5 py-2 bg-cream/50 border border-dusty-pink/30 hover:border-soft-gold rounded-xl text-left flex items-center justify-between gap-2 focus:outline-none focus:border-royal-plum transition-all cursor-pointer"
+            >
+              <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
+                <MapPin className="w-4 h-4 text-soft-gold shrink-0" />
+                {selectedVenues.length === 0 ? (
+                  <span className="text-dusty-pink/70 text-xs sm:text-sm">
+                    Select Ideal Venue / City...
+                  </span>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedVenues.map((city) => (
+                      <span
+                        key={city}
+                        className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-white border border-dusty-pink/30 text-royal-plum shadow-2xs"
+                      >
+                        {city}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleVenueCity(city);
+                          }}
+                          className="hover:text-red-500 cursor-pointer p-0.5"
+                          title={`Remove ${city}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 text-dusty-pink shrink-0 transition-transform duration-200 ${
+                  venueDropdownOpen ? "rotate-180 text-royal-plum" : ""
+                }`}
+              />
+            </button>
+
+            {/* Dropdown Menu */}
+            {venueDropdownOpen && (
+              <div className="absolute z-30 left-0 right-0 mt-1.5 bg-white border border-dusty-pink/25 rounded-2xl shadow-xl overflow-hidden animate-in fade-in-50 zoom-in-95 duration-150">
+                <div className="px-3.5 py-2.5 bg-cream/60 border-b border-dusty-pink/15 flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-royal-plum">
+                    Locations ({selectedVenues.length} selected)
+                  </span>
+                  {selectedVenues.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setVenue("");
+                      }}
+                      className="text-[10px] text-dusty-pink hover:text-red-500 font-semibold cursor-pointer"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                </div>
+
+                <div className="max-h-56 overflow-y-auto p-2 space-y-0.5">
+                  {venueOptions.map((city) => {
+                    const isSelected = selectedVenues.includes(city);
+                    return (
+                      <div
+                        key={city}
+                        onClick={() => handleToggleVenueCity(city)}
+                        className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs sm:text-sm font-medium cursor-pointer transition-colors ${
+                          isSelected
+                            ? "bg-royal-plum/10 text-royal-plum font-bold"
+                            : "text-forest-green hover:bg-cream/70"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <MapPin className={`w-3.5 h-3.5 shrink-0 ${isSelected ? "text-royal-plum" : "text-dusty-pink"}`} />
+                          <span className="truncate">{city}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isSelected && (
+                            <Check className="w-4 h-4 text-royal-plum shrink-0" />
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteVenueOption(city);
+                            }}
+                            className="p-1 rounded-lg text-dusty-pink/50 hover:text-red-500 hover:bg-red-50 transition-colors opacity-70 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
+                            title={`Delete ${city}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Dropdown footer quick add */}
+                <div className="p-2 border-t border-dusty-pink/15 bg-cream/30">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewVenueInput(true)}
+                    className="w-full py-1.5 px-3 rounded-xl border border-dashed border-dusty-pink/40 hover:border-royal-plum text-royal-plum text-xs font-bold flex items-center justify-center gap-1.5 hover:bg-white transition-colors cursor-pointer"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5 text-deep-ochre" />
+                    + Add New City / Location
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <div>

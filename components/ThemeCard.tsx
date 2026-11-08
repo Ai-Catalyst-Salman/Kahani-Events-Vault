@@ -95,17 +95,7 @@ export function ThemeCard({
           </span>
         </div>
 
-        {/* NEW badge */}
-        {isNew && !theme.launch_status && (
-          <div className="absolute top-3 right-3 z-10">
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold rounded-full shadow-md uppercase tracking-wider bg-emerald-500 text-white shadow-emerald-700/25">
-              <Sparkles className="w-3 h-3" />
-              New
-            </span>
-          </div>
-        )}
-
-        {/* Launch Status Badge (New / Bestseller) */}
+        {/* Launch Status Badge (New / Bestseller) - Standard themes have no badge */}
         {theme.launch_status && (
           <div className="absolute top-3 right-3 z-10">
             <span

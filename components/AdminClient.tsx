@@ -616,7 +616,7 @@ export function AdminClient({
             </button>
             <div className="flex items-center gap-2">
               <Image src="/logo.png" alt="Kahani" width={28} height={22} className="object-contain" />
-              <span className="font-bold text-royal-plum text-sm font-bona-nova">Kahani Vault <span className="text-dusty-pink font-normal text-xs">Admin</span></span>
+              <span className="font-bold text-royal-plum text-sm font-bona-nova">Kahani Ke Kisse <span className="text-dusty-pink font-normal text-xs">Admin</span></span>
             </div>
             <div className="w-10" />
           </div>
@@ -714,7 +714,7 @@ export function AdminClient({
                   <div className="p-4 sm:p-6 border-b border-dusty-pink/15 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div>
                       <h2 className="text-xl sm:text-2xl font-bold text-royal-plum font-bona-nova">Themes Catalog ({filteredTableThemes.length})</h2>
-                      <p className="text-forest-green/70 text-xs mt-0.5">All published themes in the Kahani Vault.</p>
+                      <p className="text-forest-green/70 text-xs mt-0.5">All published themes in Kahani Ke Kisse.</p>
                     </div>
                     <div className="flex items-center gap-3">
                       <div className="relative">

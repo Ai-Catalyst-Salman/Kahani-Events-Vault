@@ -32,11 +32,9 @@ interface SidebarProps {
 
 const SIDEBAR_STORAGE_KEY = "kv_sidebar_collapsed";
 
-// "NEW" if created within last 7 days
+// Only "NEW" if launch_status is explicitly set to "New"
 const isNew = (theme: EventTheme) => {
-  if (!theme.created_at) return false;
-  const diff = Date.now() - new Date(theme.created_at).getTime();
-  return diff / (1000 * 60 * 60 * 24) <= 7;
+  return theme.launch_status?.toLowerCase() === "new";
 };
 
 export function Sidebar({
@@ -75,6 +73,10 @@ export function Sidebar({
 
   const favoriteThemes = themes.filter((t) => favorites.includes(t.id));
   const bestsellerThemes = themes.filter((t) => t.launch_status?.toLowerCase() === "bestseller");
+  const newThemes = themes
+    .filter((t) => t.launch_status?.toLowerCase() === "new")
+    .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+    .slice(0, 5);
 
   const sectionItems =
     activeSection === "bestseller"
@@ -83,7 +85,7 @@ export function Sidebar({
       ? favoriteThemes
       : activeSection === "recent"
       ? recentlyViewed
-      : themes;
+      : newThemes;
 
   const navItems = [
     { id: "all" as const, label: "All Themes", icon: LayoutGrid, count: themes.length },
@@ -152,15 +154,9 @@ export function Sidebar({
             >
               <Icon
                 className={`w-4 h-4 shrink-0 ${
-                  isActive
-                    ? "text-white"
-                    : item.id === "bestseller"
-                    ? "text-purple-600"
-                    : item.id === "favorites"
-                    ? "text-red-400"
-                    : "text-royal-plum"
+                  isActive ? "text-white" : "text-royal-plum"
                 }`}
-                fill={item.id === "favorites" && !isActive ? "currentColor" : "none"}
+                fill={item.id === "favorites" ? "currentColor" : "none"}
               />
               <AnimatePresence>
                 {showLabel && (
@@ -226,7 +222,12 @@ export function Sidebar({
                       </p>
                     </>
                   ) : (
-                    <p className="text-[11px] text-dusty-pink font-medium">No themes found.</p>
+                    <>
+                      <Sparkles className="w-8 h-8 text-emerald-500/40 mb-2" />
+                      <p className="text-[11px] text-dusty-pink font-medium">
+                        No new themes yet.<br />Themes with New badge appear here.
+                      </p>
+                    </>
                   )}
                 </>
               )}
@@ -322,7 +323,9 @@ export function Sidebar({
       {(!collapsed || isMobile) && (
         <div className="px-4 py-3 border-t border-dusty-pink/10 shrink-0">
           <p className="text-[10px] text-dusty-pink/60 font-medium text-center">
-            {themes.length} themes total
+            {activeSection === "all"
+              ? `${newThemes.length} new ${newThemes.length === 1 ? "theme" : "themes"}`
+              : `${sectionItems.length} ${sectionItems.length === 1 ? "theme" : "themes"}`}
           </p>
         </div>
       )}

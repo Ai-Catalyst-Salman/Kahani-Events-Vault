@@ -59,7 +59,7 @@ export function AdminSidebar({
           </div>
           <div>
             <h2 className="font-bold text-royal-plum text-base tracking-tight font-bona-nova leading-none">
-              Kahani Vault
+              Kahani Ke Kisse
             </h2>
             <div className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full bg-soft-gold/15 text-deep-ochre text-[10px] font-bold tracking-widest uppercase">
               <Shield className="w-2.5 h-2.5" /> Enterprise Admin

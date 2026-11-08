@@ -74,7 +74,7 @@ export function Navbar({ email, role }: NavbarProps) {
                 Kahani
               </span>
               <span className="text-soft-gold font-normal font-bona-nova text-base sm:text-lg">
-                {" "}Vault
+                {" "}Ke Kisse
               </span>
             </div>
           </a>

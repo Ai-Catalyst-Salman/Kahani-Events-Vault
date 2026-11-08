@@ -50,9 +50,7 @@ const RECENTLY_VIEWED_KEY = "kv_recently_viewed";
 const MAX_RECENT = 20;
 
 const isNewTheme = (theme: EventTheme) => {
-  if (!theme.created_at) return false;
-  const diff = Date.now() - new Date(theme.created_at).getTime();
-  return diff / (1000 * 60 * 60 * 24) <= 7;
+  return theme.launch_status?.toLowerCase() === "new";
 };
 
 export function DashboardClient({
@@ -373,10 +371,10 @@ export function DashboardClient({
             transition={{ type: "spring", stiffness: 280, damping: 26 }}
           >
             <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-5xl font-bold text-royal-plum leading-tight tracking-tight font-bona-nova">
-              Kahani Events Vault
+              Kahani Ke Kisse
             </h1>
             <p className="mt-2 text-forest-green/80 text-sm sm:text-base md:text-lg max-w-2xl mx-auto font-medium">
-              Curated presentation themes, pitch decks, and selling keywords
+              Jashn aapka, kisse hamare
             </p>
           </motion.div>
 

@@ -47,7 +47,7 @@ export function VaultStatusScreen({
             />
             <span className="font-bona-nova text-xl tracking-tight">
               <span className="font-bold text-royal-plum">Kahani</span>
-              <span className="text-soft-gold"> Vault</span>
+              <span className="text-soft-gold"> Ke Kisse</span>
             </span>
           </Link>
         </div>

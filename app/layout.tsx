@@ -11,8 +11,8 @@ const bonaNova = Bona_Nova({
 });
 
 export const metadata: Metadata = {
-  title: "Kahani Events Vault",
-  description: "Enterprise-grade presentation showroom for Kahani Events",
+  title: "Kahani Ke Kisse",
+  description: "Jashn aapka, kisse hamare",
   icons: {
     icon: [
       { url: "/icon.png" },
