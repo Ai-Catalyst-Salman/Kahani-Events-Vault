@@ -157,10 +157,10 @@ export function ThemeCard({
             {displayName}
           </h3>
 
-          {/* Budget / Price */}
+          {/* Investment */}
           <div className="mt-3 flex items-center justify-between py-2 px-3 rounded-2xl bg-cream/60 border border-dusty-pink/15">
             <span className="text-[11px] font-bold uppercase tracking-wider text-forest-green/70">
-              Budget / Price
+              Investment
             </span>
             <div className="flex items-center gap-1 text-royal-plum font-bold text-xs sm:text-sm">
               <IndianRupee className="w-3.5 h-3.5 text-soft-gold flex-shrink-0" />
